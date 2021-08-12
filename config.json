@@ -1,0 +1,8 @@
+{
+    "token": "YOUR_TOKEN_HERE",
+    "sqlite_db": "hatbot.db",
+    "default_prefix": "!",
+    "debug": false,
+    "log_folder": "./logs",
+    "log_file": "hatbot-%DATE%.log"
+}
