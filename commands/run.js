@@ -324,7 +324,7 @@ function embed_get_players(embed) {
     return Array.from(players);
 }
 
-function embed_get_roles_for_user(embed, user) {
+function embed_get_roles_for_user(embed, user_id) {
     const roles = [];
     const lines = embed.description.split('\n');
 
@@ -343,7 +343,7 @@ function embed_get_roles_for_user(embed, user) {
 
         if (emoji != null && (match = /<@[!&]?(\d+)>/.exec(line)) != null) {
             const match_user_id = match[1];
-            if (match_user_id === user.id) {
+            if (match_user_id === user_id) {
                 const role = line.slice(0, match.index);
                 roles.push(role);
             }
@@ -353,7 +353,7 @@ function embed_get_roles_for_user(embed, user) {
     return roles;
 }
 
-function embed_update_char_name_for_user_and_role(embed, user, char_names) {
+function embed_update_char_name_for_user_and_role(embed, user_id, char_names) {
     const added_char_names = [];
     const lines = embed.description.split('\n');
     for (let i = 0; i < lines.length; ++i) {
@@ -370,11 +370,11 @@ function embed_update_char_name_for_user_and_role(embed, user, char_names) {
         }
         if (emoji != null && (match = /<@[!&]?(\d+)>/.exec(line)) != null) {
             const match_user_id = match[1];
-            if (match_user_id === user.id) {// && line.startsWith(role)) {
+            if (match_user_id === user_id) {// && line.startsWith(role)) {
                 for (const char_name_idx in char_names) {
                     const char_name = char_names[char_name_idx];
                     if (line.startsWith(char_name.role)) {
-                        lines[i] = line.slice(0, match.index) + ` <@${user.id}> [${Discord.escapeMarkdown(char_name.char_name)}]`;
+                        lines[i] = line.slice(0, match.index) + ` <@${user_id}> [${Discord.escapeMarkdown(char_name.char_name)}]`;
                         added_char_names.push(`        ${clean_role(char_name.role)} set to **${Discord.escapeMarkdown(char_name.char_name)}**`);
                         char_names.splice(char_name_idx, 1);
                         break;
@@ -480,9 +480,16 @@ function clean_role(role) {
     return cleaned;
 }
 
-async function update_char_name_to_roster(client, msg, user, channel) {
+async function update_char_name_to_roster_by_message_id(client, message_id, player_id, channel, user) {
+    const embed = get_embed(message_id);
+    const channel_id = embed_get_channel_from_id(embed);
+    const message = await client.discord_cache.getMessage(channel_id, message_id);
+    await update_char_name_to_roster(client, message, player_id, channel, user);
+}
+
+async function update_char_name_to_roster(client, msg, player_id, channel, user) {
     const embed = get_embed(msg.id);
-    const roles = embed_get_roles_for_user(embed, user);
+    const roles = embed_get_roles_for_user(embed, player_id);
 
     const filter = m => m.author.id == user.id;
     const char_names = [];
@@ -497,7 +504,7 @@ Please enter char name for **${clean_role(role)}**:`;
         char_names.push({ role: role, char_name: char_name });
     }
 
-    const added_char_names = embed_update_char_name_for_user_and_role(embed, user, char_names);
+    const added_char_names = embed_update_char_name_for_user_and_role(embed, player_id, char_names);
 
     if (added_char_names.length > 0) {
         const s = added_char_names.length > 1 ? 's' : '';
@@ -507,7 +514,7 @@ Please enter char name for **${clean_role(role)}**:`;
         if (channel.id != channel_from.id) {
             await channel.send(`✅ **${embed.title}**: Char name${s} updated!`);
         }
-        await channel_from.send(`✅ **${embed.title}**: Set char name${s} for <@${user.id}>:
+        await channel_from.send(`✅ **${embed.title}**: Set char name${s} for <@${player_id}>:
 ${added_char_names.join('\n')}`);
     }
 }
@@ -565,7 +572,7 @@ async function process_reaction(reaction, user) {
         await show_when(reaction.message.id, user.id, dm_channel, false);
     } else if (reaction.emoji.name === '📝') {
         const dm_channel = await user.createDM(true);
-        await update_char_name_to_roster(reaction.message.client, reaction.message, user, dm_channel);
+        await update_char_name_to_roster(reaction.message.client, reaction.message, user.id, dm_channel, user);
     } else if (reaction.emoji.name === '❌') {
         await remove_user_from_roster(reaction.message.client, reaction.message, user.id, reaction.emoji.name);
     } else {
@@ -1074,6 +1081,7 @@ Available \`${PREFIX}run\` commands:
 - new
 - add
 - remove
+- char
 - ping
 - note
 - set-roster
@@ -1150,6 +1158,17 @@ Example:
 
 If your channel is linked to multiple rosters, you'll then be asked to input which one to remove the player.
 `);
+            } else if (command === 'char') {
+                help(`${PREFIX}run char <@user>`,
+`Set someone's char name.
+
+Example:
+\`\`\`${PREFIX}run char @Hatfun\`\`\`
+
+You'll then be asked to input the following:
+- If your channel is linked to multiple rosters, which one to add the player
+- Char name for player roles, one at a time`
+);
             } else if (command === 'ping') {
                 help(`${PREFIX}run ping <MULTILINE MESSAGE>`,
 `Ping every players involved in a run.
@@ -1831,6 +1850,47 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 }
             }
             await message.channel.send(`✅ The channel <#${channel_id}> will no longer be used for channel choices`);
+        }  else if (args[0] === 'char') {
+            let match;
+            if ((match = /<@[!&]?(\d+)>/.exec(args[1])) == null) {
+                await message.channel.send(`❌ Usage \`${PREFIX}run char @user\``);
+                return;
+            }
+            const player_user_id = match[1];
+            // Get the list of runs that is linked to channel
+            const msg_id_embeds = get_embeds_linked_to_channel(message.channel.id);
+
+            if (msg_id_embeds.length == 0) {
+                await message.channel.send('❌ There\'s no run linked to this channel to set player char name!');
+            } else if (msg_id_embeds.length == 1) {
+                const msg_id_embed = msg_id_embeds[0];
+                await update_char_name_to_roster_by_message_id(message.client, msg_id_embed.message_id, player_user_id, message.channel, message.author);
+            } else {
+                const questionRun =
+`📄 Please choose a run to set this player's char name:
+
+${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n')}
+`;
+                const questionRunEmbed = new Discord.MessageEmbed().setTitle('Add player').setDescription(questionRun);
+
+                const filter = m => m.author.id === message.author.id;
+                await message.channel.send(questionRunEmbed)
+                .then(async choose_run_message => {
+                    await message.channel.awaitMessages(filter, { max: 1 })
+                    .then(async replies => {
+                        const reply = replies.first();
+                        const run_idx = parseInt(reply.content.trim());
+                        if (isNaN(run_idx) || run_idx <= 0 || run_idx > msg_id_embeds.length) {
+                            await message.channel.send(`❌ Invalid choice! Please enter a number between 1 and ${msg_id_embeds.length}`);
+                            return;
+                        }
+                        const msg_id_embed = msg_id_embeds[run_idx - 1];
+                        await update_char_name_to_roster_by_message_id(message.client, msg_id_embed.message_id, player_user_id, message.channel, message.author);
+                        await reply.delete();
+                        await choose_run_message.delete();
+                    });
+                });
+            }
         }
     }
 }

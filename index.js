@@ -222,8 +222,8 @@ client.on('message', async message => {
     try {
         await client.commands.get(noprefix_command).execute(message, args);
     } catch (error) {
-        logger.error(JSON.stringify(error));
-        message.channel.send('❌ Some unexpected error occurred.\n<@281527853173178368>!!!! You\'re a noob!! Fix it now!');
+        logger.error(error.stack);
+        await message.channel.send('❌ Some unexpected error occurred.\n<@281527853173178368>!!!! You\'re a noob!! Fix it now!');
     }
 });
 
