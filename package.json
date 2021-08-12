@@ -1,0 +1,17 @@
+{
+  "dependencies": {
+    "@keyv/sqlite": "^2.0.2",
+    "bufferutil": "^4.0.3",
+    "discord.js": "^12.5.3",
+    "discord.js-light": "^3.5.11",
+    "emoji-regex": "^9.2.2",
+    "keyv": "^4.0.3",
+    "moment-timezone": "^0.5.33",
+    "sequelize": "^6.6.2",
+    "sqlite3": "^5.0.2",
+    "utf-8-validate": "^5.0.5",
+    "winston": "^3.3.3",
+    "winston-daily-rotate-file": "^4.5.5",
+    "zlib-sync": "^0.1.7"
+  }
+}
