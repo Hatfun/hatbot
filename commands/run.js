@@ -136,7 +136,8 @@ function embed_update_note(embed, note) {
     embed.fields[note_idx].value = note;
 }
 
-function embed_add_reminder(embed, reminder_str) {
+function embed_add_reminder(embed, reminder_minutes) {
+    const readable = reminder_to_readable(reminder_minutes);
     const full_when = embed.fields[FIELD_WHEN].name;
     const when = full_when.substring(SERVER_TIME_PREFIX.length);
     const date_time = moment.tz(when, 'MMMM Do YYYY h:mm A', 'Europe/Berlin');
@@ -150,25 +151,15 @@ function embed_add_reminder(embed, reminder_str) {
 
         reminder_idx = last_idx - 1;
         embed.fields[reminder_idx].name = 'Reminders';
-        embed.fields[reminder_idx].value = `• ${reminder_str}`;
+        embed.fields[reminder_idx].value = `• ${readable}`;
     } else {
-        embed.fields[reminder_idx].value += `\n• ${reminder_str}`;
+        embed.fields[reminder_idx].value += `\n• ${readable}`;
     }
     const lines = embed.fields[reminder_idx].value.split('\n');
     lines.sort((r1_str, r2_str) => {
         const r1 = parse_reminder(r1_str.substring(2));
         const r2 = parse_reminder(r2_str.substring(2));
-        let r1_to_minutes = r1.amount;
-        if (r1.type === 'd')
-            r1_to_minutes *= 1440;
-        if (r1.type === 'h')
-            r1_to_minutes *= 60;
-        let r2_to_minutes = r2.amount;
-        if (r2.type === 'd')
-            r2_to_minutes *= 1440;
-        if (r2.type === 'h')
-            r2_to_minutes *= 60;
-        return r2_to_minutes - r1_to_minutes;
+        return r2 - r1;
     });
     embed.fields[reminder_idx].value = lines.join('\n');
 }
@@ -403,14 +394,44 @@ function get_embeds_linked_to_channel(command_channel_id) {
         // .sort((mie1, mie2) => mie1.embed.title.localeCompare(mie2.embed.title));
 }
 
+function reminder_to_readable(minutes) {
+    const days = Math.floor(minutes / 1440);
+    minutes -= days * 1440;
+    const hours = Math.floor(minutes / 60);
+    minutes -= hours * 60;
+    const readable = [];
+    if (days > 0) {
+        readable.push(`${days} day${days > 1 ? 's' : ''}`);
+    }
+    if (hours > 0) {
+        readable.push(`${hours} hour${hours > 1 ? 's' : ''}`);
+    }
+    if (minutes > 0) {
+        readable.push(`${minutes} minute${minutes > 1 ? 's' : ''}`);
+    }
+    return `${readable.join(' ')} before`;
+}
+
 function parse_reminder(reminder_str) {
-    const match = /^(\d+)\s+(days?|hours?|minutes?) before$/.exec(reminder_str);
+    const match = /^((\d+)\s+days?\s+)?((\d+)\s+hours?\s+)?((\d+)\s+minutes?\s+)?before$/.exec(reminder_str);
+
     if (match == null) {
         return null;
     }
-    const amount = parseInt(match[1]);
-    const type = match[2];
-    return { amount: amount, type: type[0] };
+    let minutes = 0;
+    // days to minutes
+    if (match[2]) {
+        minutes += parseInt(match[2]) * 1440;
+    }
+    // hours to minutes
+    if (match[4]) {
+        minutes += parseInt(match[4]) * 60;
+    }
+    // minutes
+    if (match[6]) {
+        minutes += parseInt(match[6]);
+    }
+    return minutes;
 }
 
 async function update_user_to_roster(client, msg, user_id, emoji_name) {
@@ -631,10 +652,10 @@ async function check_and_update_reminders(client, embed) {
 
     const lines = embed.fields[reminder_idx].value.split('\n');
     const line = lines[0];
-    const r = parse_reminder(line.substring(2));
+    const reminder_minutes = parse_reminder(line.substring(2));
     const full_when = embed.fields[FIELD_WHEN].name;
     const when = full_when.substring(SERVER_TIME_PREFIX.length);
-    const date_time = moment.tz(when, 'MMMM Do YYYY h:mm A', 'Europe/Berlin').subtract(r.amount, r.type);
+    const date_time = moment.tz(when, 'MMMM Do YYYY h:mm A', 'Europe/Berlin').subtract(reminder_minutes, 'm');
     if (date_time.isBefore(moment())) {
         embed_update_time_from_now(embed);
         lines.splice(0, 1);
@@ -956,21 +977,9 @@ module.exports = {
             await channel_from.send(`✅ **${embed.title}**: Note updated!`);
         }
 
-        async function add_reminder(msg_id_embed, reminder_str) {
+        async function add_reminder(msg_id_embed, reminder_minutes) {
             const embed = msg_id_embed.embed;
-            const reminder = parse_reminder(reminder_str);
-            if (reminder == null) {
-                const channel_from = await get_embed_channel_from(message.client, embed);
-                await channel_from.send(`❌ **${embed.title}**: Invalid reminder ${reminder_str}!
-Supported format: \`NUMBER [days|hours|minutes] before\`
-Examples:
-- \`2 days before\`
-- \`12 hours before\`
-- \`90 minutes before\`
-`);
-                return;
-            }
-            embed_add_reminder(embed, reminder_str);
+            embed_add_reminder(embed, reminder_minutes);
             const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
             embed_update_time_from_now(embed);
             await run_msg.edit(embed);
@@ -1589,22 +1598,28 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
             const reminder_str = args[1];
             if (reminder_str == null) {
                 await message.channel.send(`❌ Reminder missing!\nUsage: \`${PREFIX}run add-reminder REMINDER\`
-Supported format: \`NUMBER [days|hours|minutes] before\`
+Supported format: \`[NUMBER days] [NUMBER hours] [NUMBER minutes] before\`
 Examples:
 - \`2 days before\`
 - \`12 hours before\`
 - \`90 minutes before\`
+- \`2 days 3 hours before\`
+- \`1 day 12 hours before\`
+- \`1 hour 30 minutes before\`
 `);
                 return;
             }
-            const reminder = parse_reminder(reminder_str);
-            if (reminder == null) {
-                await message.channel.send(`❌ Invalid reminder ${reminder_str}!
-Supported format: \`NUMBER [days|hours|minutes] before\`
+            const reminder_minutes = parse_reminder(reminder_str);
+            if (reminder_minutes == null) {
+                await message.channel.send(`❌ **${embed.title}**: Invalid reminder ${reminder_str}!
+Supported format: \`[NUMBER days] [NUMBER hours] [NUMBER minutes] before\`
 Examples:
 - \`2 days before\`
 - \`12 hours before\`
 - \`90 minutes before\`
+- \`2 days 3 hours before\`
+- \`1 day 12 hours before\`
+- \`1 hour 30 minutes before\`
 `);
                 return;
             }
@@ -1616,7 +1631,7 @@ Examples:
                 await message.channel.send('❌ There\'s no run linked to this channel to add reminder!');
             } else if (msg_id_embeds.length == 1) {
                 const msg_id_embed = msg_id_embeds[0];
-                await add_reminder(msg_id_embed, reminder_str);
+                await add_reminder(msg_id_embed, reminder_minutes);
             } else {
                 const questionRun =
 `📄 Please choose a run to apply this reminder:
@@ -1637,7 +1652,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                             return;
                         }
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
-                        await add_reminder(msg_id_embed, reminder_str);
+                        await add_reminder(msg_id_embed, reminder_minutes);
                         await reply.delete();
                         await choose_run_message.delete();
                     });
