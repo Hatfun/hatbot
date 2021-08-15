@@ -184,7 +184,7 @@ function embed_get_distinct_available_emojis(embed) {
     let max_players = 0;
     for (let i = 0; i < lines.length; ++i) {
         const unicodeRegex = emojiRegex();
-        const hasEmoteRegex = /^<a?:.+?:(\d+)>.+$/gm
+        const hasEmoteRegex = /^(<a?:.+?:\d+>).+$/gm
 
         const line = lines[i];
         let match;
@@ -209,7 +209,7 @@ function embed_update_number_of_players(embed) {
     let max_players = 0;
     for (let i = 0; i < lines.length; ++i) {
         const unicodeRegex = emojiRegex();
-        const hasEmoteRegex = /^<a?:.+?:(\d+)>.+$/gm
+        const hasEmoteRegex = /^(<a?:.+?:\d+>).+$/gm
 
         const line = lines[i];
         let match;
@@ -237,7 +237,7 @@ function embed_get_distinct_roles(embed) {
     const roles = new Set();
     for (let i = 0; i < lines.length; ++i) {
         const unicodeRegex = emojiRegex();
-        const hasEmoteRegex = /^<a?:.+?:(\d+)>.+$/gm
+        const hasEmoteRegex = /^(<a?:.+?:\d+>).+$/gm
 
         const line = lines[i];
         let match;
@@ -262,7 +262,7 @@ function embed_update_user_to_roster(embed, user_id, role) {
 
     for (let i = 0; i < lines.length; ++i) {
         const unicodeRegex = emojiRegex();
-        const hasEmoteRegex = /^<a?:.+?:(\d+)>.+$/gm
+        const hasEmoteRegex = /^(<a?:.+?:\d+>).+$/gm
 
         const line = lines[i];
         let match;
@@ -272,6 +272,7 @@ function embed_update_user_to_roster(embed, user_id, role) {
         } else if ((match = hasEmoteRegex.exec(line)) && match.index === 0) {
             emoji = match[1];
         }
+
 
         if (emoji != null && emoji == role && (match = /<@[!&]?\d+>/.exec(line)) == null) {
             changed = clean_role(line);
@@ -296,7 +297,7 @@ function embed_get_players(embed) {
     const players = new Set();
     for (let i = 0; i < lines.length; ++i) {
         const unicodeRegex = emojiRegex();
-        const hasEmoteRegex = /^<a?:.+?:(\d+)>.+$/gm
+        const hasEmoteRegex = /^(<a?:.+?:\d+>).+$/gm
 
         const line = lines[i];
         let match;
@@ -321,7 +322,7 @@ function embed_get_roles_for_user(embed, user_id) {
 
     for (let i = 0; i < lines.length; ++i) {
         const unicodeRegex = emojiRegex();
-        const hasEmoteRegex = /^<a?:.+?:(\d+)>.+$/gm
+        const hasEmoteRegex = /^(<a?:.+?:\d+>).+$/gm
 
         const line = lines[i];
         let match;
@@ -349,7 +350,7 @@ function embed_update_char_name_for_user_and_role(embed, user_id, char_names) {
     const lines = embed.description.split('\n');
     for (let i = 0; i < lines.length; ++i) {
         const unicodeRegex = emojiRegex();
-        const hasEmoteRegex = /^<a?:.+?:(\d+)>.+$/gm
+        const hasEmoteRegex = /^(<a?:.+?:\d+>).+$/gm
 
         const line = lines[i];
         let match;
@@ -597,7 +598,7 @@ async function process_reaction(reaction, user) {
     } else if (reaction.emoji.name === '❌') {
         await remove_user_from_roster(reaction.message.client, reaction.message, user.id, reaction.emoji.name);
     } else {
-        await update_user_to_roster(reaction.message.client, reaction.message, user.id, reaction.emoji.name);
+        await update_user_to_roster(reaction.message.client, reaction.message, user.id, reaction.emoji.toString());
     }
 
     await reaction.users.remove(user.id);
@@ -887,7 +888,7 @@ module.exports = {
                 .setColor('#0099ff')
                 .setTitle(name)
                 .setAuthor(message.author.username, message.author.displayAvatarURL({format: 'jpg'}))
-                .setDescription('\u200B' + template.content + '\n\u200B')
+                .setDescription((template.content.startsWith('\n') ? '\u200B' : '') + template.content + '\n\u200B')
                 .addFields(
                     { name: '\u200B', value: '\u200B', inline: true },
                     { name: 'Channel', value: `<#${channel_from.id}>`, inline: true },
@@ -943,7 +944,7 @@ module.exports = {
                             logger.warn('Can\'t react on deleted message');
                             return;
                         }
-                        logger.error(exception);
+                        logger.error(exception.stack);
                     }
                 }
                 await run_msg.react('🕒');

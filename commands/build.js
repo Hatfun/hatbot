@@ -363,6 +363,10 @@ const class_to_properties = {
     },
 }
 
+function singular(word) {
+    return (word.length > 2 && word[word.length - 1].toLowerCase() == 's') ? word.substr(0, word.length - 1) : word;
+}
+
 async function refresh_calc_variable(file, variables) {
     const url = `https://calc.talonro.com/js/${file}`;
     fs.unlink(`./downloads/${file}.tmp`, function(err) {});
@@ -593,14 +597,14 @@ Example:
                 search_str = args[1].trim();
             }
             const search = search_str == null ? null : search_str.split(/\s+/).filter(e => e.trim().length > 0);
-            const search_lower = search == null ? null : search.map(s => s.toLowerCase());
+            const search_lower = search == null ? null : search.map(s => singular(s.toLowerCase()));
             const user_builds_map = await get_all_builds();
             const user_builds_array = new Map();
             for (const [user_id, ubuilds_map] of user_builds_map) {
                 const builds_map = ubuilds_map.builds_map;
                 const user = ubuilds_map.user;
                 for (const key in builds_map) {
-                    const key_split = key.toLowerCase().split(/\s+/).filter(e => e.trim().length > 0);
+                    const key_split = key.toLowerCase().split(/\s+/).filter(e => e.trim().length > 0).map(s => singular(s));
                     if (search_lower == null || search_lower.every(s => key_split.includes(s))) {
                         if (!user_builds_array.has(user_id)) {
                             user_builds_array.set(user_id, []);
@@ -621,7 +625,7 @@ Example:
                 for (const v of user_builds_array.values()) {
                     total_length += v.length;
                 }
-                const s = total_length.length > 1 ? "s" : "";
+                const s = total_length > 1 ? "s" : "";
                 const field_title = search == null ? `All ${total_length} build${s}` : `${total_length} build${s} matching [${search.join(", ")}]`;
 
                 let first_message = true;
@@ -954,14 +958,14 @@ Example:
             }
 
             const search = search_str.split(/\s+/).filter(e => e.trim().length > 0);
-            const search_lower = search.map(s => s.toLowerCase());
+            const search_lower = search.map(s => singular(s.toLowerCase()));
             const user_builds_map = await get_all_builds();
             const user_builds_array = new Map();
             for (const [user_id, ubuilds_map] of user_builds_map) {
                 const builds_map = ubuilds_map.builds_map;
                 const user = ubuilds_map.user;
                 for (const key in builds_map) {
-                    const key_split = key.toLowerCase().split(/\s+/).filter(e => e.trim().length > 0);
+                    const key_split = key.toLowerCase().split(/\s+/).filter(e => e.trim().length > 0).map(s => singular(s));
                     if (search_lower == null || search_lower.every(s => key_split.includes(s))) {
                         if (!user_builds_array.has(user_id)) {
                             user_builds_array.set(user_id, []);
@@ -992,7 +996,7 @@ Example:
 ${builds_array.map((elt, idx) => `${idx == 0 || builds_array[idx - 1].user_id != elt.user_id ? `\n<@${elt.user_id}>:\n` : ''}\`${idx + 1}.\` ${elt.name}`).join('\n')}
 `;
                 const questionEmbed = new Discord.MessageEmbed().setDescription(question);
-                const filter = m => m.author === message.author;
+                const filter = m => m.author.id === message.author.id;
                 await message.channel.send(questionEmbed).then(async () => {
                     await message.channel.awaitMessages(filter, { max: 1 })
                         .then(async collected => {
