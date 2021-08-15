@@ -487,11 +487,6 @@ module.exports = {
             return true;
         }
 
-        async function get_build(build_name, member_id = message.author.id) {
-            const builds_map = await get_builds(member_id);
-            return builds_map[build_name];
-        }
-
         async function help(title, content) {
             await message.client.help(message, title, content);
         }
@@ -670,12 +665,6 @@ Example:
             let search_str = args[1].trim();
 
             async function show_build(member_user, build) {
-                // const build_url = await get_build(build_name);
-                // if (build_url == null) {
-                //     await message.channel.send(`❌ Cannot find build ${build_name}`);
-                //     return;
-                // }
-
                 if (build.url.startsWith('https://calc.talonro.com/')) {
                     let w = build.url.split("?")[1];
                     if (w.substr(0,1) == '_'){

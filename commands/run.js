@@ -195,7 +195,7 @@ function embed_get_distinct_available_emojis(embed) {
             emoji = match[1];
         }
 
-        if (emoji != null && (match = /<@[!&]?(\d+)>/.exec(line)) == null) {
+        if (emoji != null && (match = /<@[!]?(\d+)>/.exec(line)) == null) {
             emojis.add(emoji);
         }
     }
@@ -222,7 +222,7 @@ function embed_update_number_of_players(embed) {
 
         if (emoji != null) {
             max_players += 1;
-            if ((match = /<@[!&]?(\d+)>/.exec(line)) != null) {
+            if ((match = /<@[!]?(\d+)>/.exec(line)) != null) {
                 current_players += 1;
             }
         }
@@ -274,12 +274,12 @@ function embed_update_user_to_roster(embed, user_id, role) {
         }
 
 
-        if (emoji != null && emoji == role && (match = /<@[!&]?\d+>/.exec(line)) == null) {
+        if (emoji != null && emoji == role && (match = /<@[!]?\d+>/.exec(line)) == null) {
             changed = clean_role(line);
             lines[i] = line + ` <@${user_id}>`;
             break;
         }
-        if (emoji != null && role == '❌' && (match = /<@[!&]?(\d+)>/.exec(line)) != null) {
+        if (emoji != null && role == '❌' && (match = /<@[!]?(\d+)>/.exec(line)) != null) {
             const match_user_id = match[1];
             if (match_user_id === user_id) {
                 lines[i] = line.slice(0, match.index);
@@ -308,8 +308,8 @@ function embed_get_players(embed) {
             emoji = match[1];
         }
 
-        if (emoji != null && (match = /<@[!&]?\d+>/.exec(line)) != null) {
-            players.add(match[0]);
+        if (emoji != null && (match = /<@[!]?(\d+)>/.exec(line)) != null) {
+            players.add(`<@${match[1]}>`);
         }
     }
 
@@ -333,7 +333,7 @@ function embed_get_roles_for_user(embed, user_id) {
             emoji = match[1];
         }
 
-        if (emoji != null && (match = /<@[!&]?(\d+)>/.exec(line)) != null) {
+        if (emoji != null && (match = /<@[!]?(\d+)>/.exec(line)) != null) {
             const match_user_id = match[1];
             if (match_user_id === user_id) {
                 const role = line.slice(0, match.index);
@@ -360,7 +360,7 @@ function embed_update_char_name_for_user_and_role(embed, user_id, char_names) {
         } else if ((match = hasEmoteRegex.exec(line)) && match.index === 0) {
             emoji = match[1];
         }
-        if (emoji != null && (match = /<@[!&]?(\d+)>/.exec(line)) != null) {
+        if (emoji != null && (match = /<@[!]?(\d+)>/.exec(line)) != null) {
             const match_user_id = match[1];
             if (match_user_id === user_id) {// && line.startsWith(role)) {
                 for (const char_name_idx in char_names) {
@@ -756,6 +756,267 @@ async function get_message_by_id_from_global_cache(client, message_id) {
     return null;
 }
 
+async function message_validate_channels(message, guild_cache) {
+    let errors = [];
+    if (await guild_cache.get(CHANNEL_TEMPLATE) == null) {
+        errors.push(`❌ Please set template channel by typing \`${PREFIX}run set-template-channel #channel\``);
+    }
+    if (await guild_cache.get(CHANNEL_RUN_ARCHIVES) == null) {
+        errors.push(`❌ Please set archives channel by typing \`${PREFIX}run set-archives-channel #channel\``);
+    }
+    if (errors.length > 0) {
+        await message.channel.send(errors);
+        return false;
+    }
+    return true;
+}
+
+async function message_get_channel(message, guild_cache, channel_key) {
+    return message.client.discord_cache.getChannel(await guild_cache.get(channel_key));
+}
+
+async function message_get_channel_by_id(message, channel_id) {
+    return message.client.discord_cache.getChannel(channel_id);
+}
+
+async function message_get_template_list(message, guild_cache) {
+    const channel = await message_get_channel(message, guild_cache, CHANNEL_TEMPLATE);
+    const channel_messages = await channel.messages.fetch({ limit: 100 });
+
+    const template_list = channel_messages.map(msg => {
+        let [title, ...content] = msg.content.split('\n')
+        content = content.join('\n')
+        return { id: msg.id, title: title, content: content };
+    });
+
+    if (template_list.length == 0) {
+        await message.channel.send(`❌ Cannot find any template in ${channel.name}!`);
+        return null;
+    }
+    return template_list.sort((t1, t2) => t1.title.localeCompare(t2.title));
+}
+
+async function message_add_message_to_global_cache(message, run_message, embed) {
+    const global_cache = message.client.getCache('global');
+    let message_map = await global_cache.get(GLOBAL_MESSAGE_MAP);
+    if (message_map == null) {
+        message_map = {};
+    }
+    if (!(message.guild.id in message_map)) {
+        message_map[message.guild.id] = {};
+    }
+    if (!(run_message.channel.id in message_map[message.guild.id])) {
+        message_map[message.guild.id][run_message.channel.id] = [];
+    }
+    if (!message_map[message.guild.id][run_message.channel.id].includes(run_message.id)) {
+        message_map[message.guild.id][run_message.channel.id].push(run_message.id);
+    }
+    await global_cache.set(GLOBAL_MESSAGE_MAP, message_map);
+    // In-memory global embeds
+    global_embeds.set(run_message.id, embed);
+}
+
+async function message_create_new_run(message, name, date_time_str, template, channel_from, channel_to) {
+    const date_time = moment.tz(date_time_str, "YYYY-MM-DD HH:mm", true, "Europe/Berlin");
+    if (!date_time.isValid()) {
+        await channel_from.send('❌ Invalid date! Example of accepted format: \`2021-08-25 15:30\`');
+        return;
+    }
+
+    const embed = new Discord.MessageEmbed()
+        .setColor('#0099ff')
+        .setTitle(name)
+        .setAuthor(message.author.username, message.author.displayAvatarURL({format: 'jpg'}))
+        .setDescription((template.content.startsWith('\n') ? '\u200B' : '') + template.content + '\n\u200B')
+        .addFields(
+            { name: '\u200B', value: '\u200B', inline: true },
+            { name: 'Channel', value: `<#${channel_from.id}>`, inline: true },
+            // { name: '\u200B', value: '\u200B' },
+            { name: '\u200B', value: `Pick an available role by choosing the corresponding reaction.
+🕒 To get DM'ed the date and time of the run in your local time.
+📝 To register your char name, then reply to DM.
+❌ To remove yourself from signup.` },
+        );
+    embed_update_number_of_players(embed);
+    embed_update_date_time(embed, date_time);
+    const roles = embed_get_distinct_roles(embed);
+    const run_message = await channel_to.send(embed);
+
+    await message_add_message_to_global_cache(message, run_message, embed);
+    await channel_from.send(`✅ **${name}** Successfully setup new run on <#${channel_to.id}>`);
+    for (let emoji of roles) {
+        try {
+            await run_message.react(emoji);
+        } catch (exception) {
+            if (exception.code === 10008) {
+                logger.warn('Can\'t react on deleted message');
+                return;
+            }
+            logger.error(exception);
+        }
+    }
+    await run_message.react('🕒');
+    await run_message.react('📝');
+    await run_message.react('❌');
+}
+
+async function message_update_roster(message, msg_id_embed, roster) {
+    if (roster != null) {
+        const embed = msg_id_embed.embed;
+        embed_update_roster(embed, roster);
+        embed_update_number_of_players(embed);
+        const roles = embed_get_distinct_roles(embed);
+        const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
+        embed_update_time_from_now(embed);
+        await run_msg.edit(embed);
+
+        // Confirmation before working with reactions
+        const channel_from = await get_embed_channel_from(message.client, embed);
+        await channel_from.send(`✅ **${embed.title}** Roster updated!`);
+        await run_msg.reactions.removeAll();
+        for (let emoji of roles) {
+            try {
+                await run_msg.react(emoji);
+            } catch (exception) {
+                // Message can't be found, might as well exit now
+                if (exception.code === 10008) {
+                    logger.warn('Can\'t react on deleted message');
+                    return;
+                }
+                logger.error(exception.stack);
+            }
+        }
+        await run_msg.react('🕒');
+        await run_msg.react('📝');
+        await run_msg.react('❌');
+    }
+}
+
+async function message_update_datetime(message, msg_id_embed, date_time) {
+    if (date_time != null) {
+        const embed = msg_id_embed.embed;
+        embed_update_date_time(embed, date_time);
+        const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
+        await run_msg.edit(embed);
+
+        const channel_from = await get_embed_channel_from(message.client, embed);
+        await channel_from.send(`✅ **${embed.title}**: Date and time updated!`);
+    }
+}
+
+async function message_update_note(message, msg_id_embed, note) {
+    if (note == null)
+        note = '\u200B';
+    const embed = msg_id_embed.embed;
+    embed_update_note(embed, note);
+    const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
+    embed_update_time_from_now(embed);
+    await run_msg.edit(embed);
+
+    const channel_from = await get_embed_channel_from(message.client, embed);
+    await channel_from.send(`✅ **${embed.title}**: Note updated!`);
+}
+
+async function message_add_reminder(message, msg_id_embed, reminder_minutes) {
+    const embed = msg_id_embed.embed;
+    embed_add_reminder(embed, reminder_minutes);
+    const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
+    embed_update_time_from_now(embed);
+    await run_msg.edit(embed);
+
+    const channel_from = await get_embed_channel_from(message.client, embed);
+    await channel_from.send(`✅ **${embed.title}**: Reminder updated!`);
+}
+
+async function message_clear_reminders(message, msg_id_embed) {
+    const embed = msg_id_embed.embed;
+
+    embed_clear_reminder(embed);
+    const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
+    embed_update_time_from_now(embed);
+    await run_msg.edit(embed);
+
+    const channel_from = await get_embed_channel_from(message.client, embed);
+    await channel_from.send(`✅ **${embed.title}**: Reminders cleared!`);
+}
+
+async function message_ping(message, embed, ping_message) {
+    const players = embed_get_players(embed);
+
+    const channel_from = await get_embed_channel_from(message.client, embed);
+    if (players.length > 0) {
+      const content = `📢 **${embed.title}**
+${players.join(' ')}
+
+${ping_message}`;
+        await channel_from.send(content);
+    } else {
+        await channel_from.send(`❌ **${embed.title}**: No one has signed up yet!`);
+    }
+}
+
+async function message_end_run(message, msg_id_embed) {
+    const embed = msg_id_embed.embed;
+    const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
+    await run_msg.delete();
+
+    const channel_archives = await message_get_channel(message, guild_cache, CHANNEL_RUN_ARCHIVES);
+    const channel_from = await get_embed_channel_from(message.client, embed);
+    embed.setColor("#009900");
+    await channel_archives.send(embed);
+
+    await delete_run_from_cache(message.client, msg_id_embed.message_id);
+    await channel_from.send(`✅ **${embed.title}** is over. Roster message has been archived!`);
+}
+
+async function message_add_player(message, msg_id_embed, player_user_id) {
+    if (player_user_id != null) {
+        const embed = msg_id_embed.embed;
+        const emojis = Array.from(embed_get_distinct_available_emojis(embed));
+        if (emojis.length == 0) {
+            await message.channel.send(`❌ **${embed.title}**: There's no available role!`);
+            return;
+        }
+        const questionRole =
+`👤 Please choose an available role:
+
+${emojis.map((elt, idx) => `\`${idx + 1}.\`    ${elt}`).join('\n')}
+`;
+        const questionRoleEmbed = new Discord.MessageEmbed().setTitle('Choose role').setDescription(questionRole);
+
+        const filter = m => m.author.id === message.author.id;
+        await message.channel.send(questionRoleEmbed)
+        .then(async choose_role_message => {
+            await message.channel.awaitMessages(filter, { max: 1 })
+            .then(async replies => {
+                const reply = replies.first();
+                const emoji_idx = parseInt(reply.content.trim());
+                if (isNaN(emoji_idx) || emoji_idx <= 0 || emoji_idx > emojis.length) {
+                    await message.channel.send(`❌ **${embed.title}**: Invalid choice! Please enter a number between 1 and ${emojis.length}`);
+                    return;
+                }
+                const emoji_name = emojis[emoji_idx - 1];
+
+                const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
+                await update_user_to_roster(message.client, run_msg, player_user_id, emoji_name);
+                await reply.delete();
+                await choose_role_message.delete();
+            });
+        });
+    }
+}
+
+async function message_remove_player(message, msg_id_embed, player_user_id) {
+    if (player_user_id != null) {
+        const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
+        await remove_user_from_roster(message.client, run_msg, player_user_id, '❌');
+    }
+}
+
+async function message_help(message, title, content) {
+    await message.client.help(message, title, content);
+}
+
 module.exports = {
     name: 'run',
     description: 'Utilities for organizing runs',
@@ -817,271 +1078,10 @@ module.exports = {
 
         const guild_cache = message.client.getCache(message.guild.id);
 
-        async function validate_channels() {
-            let errors = [];
-            if (await guild_cache.get(CHANNEL_TEMPLATE) == null) {
-                errors.push(`❌ Please set template channel by typing \`${PREFIX}run set-template-channel #channel\``);
-            }
-            if (await guild_cache.get(CHANNEL_RUN_ARCHIVES) == null) {
-                errors.push(`❌ Please set archives channel by typing \`${PREFIX}run set-archives-channel #channel\``);
-            }
-            if (errors.length > 0) {
-                await message.channel.send(errors);
-                return false;
-            }
-            return true;
-        }
-
-        async function get_channel(channel_key) {
-            return message.client.discord_cache.getChannel(await guild_cache.get(channel_key));
-        }
-
-        async function get_channel_by_id(channel_id) {
-            return message.client.discord_cache.getChannel(channel_id);
-        }
-
-        async function get_template_list() {
-            const channel = await get_channel(CHANNEL_TEMPLATE);
-            const channel_messages = await channel.messages.fetch({ limit: 100 });
-
-            const template_list = channel_messages.map(msg => {
-                let [title, ...content] = msg.content.split('\n')
-                content = content.join('\n')
-                return { id: msg.id, title: title, content: content };
-            });
-
-            if (template_list.length == 0) {
-                await message.channel.send(`❌ Cannot find any template in ${channel.name}!`);
-                return null;
-            }
-            return template_list.sort((t1, t2) => t1.title.localeCompare(t2.title));
-        }
-
-        async function add_message_to_global_cache(run_message, embed) {
-            const global_cache = message.client.getCache('global');
-            let message_map = await global_cache.get(GLOBAL_MESSAGE_MAP);
-            if (message_map == null) {
-                message_map = {};
-            }
-            if (!(message.guild.id in message_map)) {
-                message_map[message.guild.id] = {};
-            }
-            if (!(run_message.channel.id in message_map[message.guild.id])) {
-                message_map[message.guild.id][run_message.channel.id] = [];
-            }
-            if (!message_map[message.guild.id][run_message.channel.id].includes(run_message.id)) {
-                message_map[message.guild.id][run_message.channel.id].push(run_message.id);
-            }
-            await global_cache.set(GLOBAL_MESSAGE_MAP, message_map);
-            // In-memory global embeds
-            global_embeds.set(run_message.id, embed);
-        }
-
-        async function create_new_run(name, date_time_str, template, channel_from, channel_to) {
-            const date_time = moment.tz(date_time_str, "YYYY-MM-DD HH:mm", true, "Europe/Berlin");
-            if (!date_time.isValid()) {
-                await channel_from.send('❌ Invalid date! Example of accepted format: \`2021-08-25 15:30\`');
-                return;
-            }
-
-            const embed = new Discord.MessageEmbed()
-                .setColor('#0099ff')
-                .setTitle(name)
-                .setAuthor(message.author.username, message.author.displayAvatarURL({format: 'jpg'}))
-                .setDescription((template.content.startsWith('\n') ? '\u200B' : '') + template.content + '\n\u200B')
-                .addFields(
-                    { name: '\u200B', value: '\u200B', inline: true },
-                    { name: 'Channel', value: `<#${channel_from.id}>`, inline: true },
-                    // { name: '\u200B', value: '\u200B' },
-                    { name: '\u200B', value: `Pick an available role by choosing the corresponding reaction.
-🕒 To get DM'ed the date and time of the run in your local time.
-📝 To register your char name, then reply to DM.
-❌ To remove yourself from signup.` },
-                );
-            embed_update_number_of_players(embed);
-            embed_update_date_time(embed, date_time);
-            const roles = embed_get_distinct_roles(embed);
-            const run_message = await channel_to.send(embed);
-
-            await add_message_to_global_cache(run_message, embed);
-            await channel_from.send(`✅ **${name}** Successfully setup new run on <#${channel_to.id}>`);
-            for (let emoji of roles) {
-                try {
-                    await run_message.react(emoji);
-                } catch (exception) {
-                    if (exception.code === 10008) {
-                        logger.warn('Can\'t react on deleted message');
-                        return;
-                    }
-                    logger.error(exception);
-                }
-            }
-            await run_message.react('🕒');
-            await run_message.react('📝');
-            await run_message.react('❌');
-        }
-
-        async function update_roster(msg_id_embed, roster) {
-            if (roster != null) {
-                const embed = msg_id_embed.embed;
-                embed_update_roster(embed, roster);
-                embed_update_number_of_players(embed);
-                const roles = embed_get_distinct_roles(embed);
-                const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
-                embed_update_time_from_now(embed);
-                await run_msg.edit(embed);
-
-                // Confirmation before working with reactions
-                const channel_from = await get_embed_channel_from(message.client, embed);
-                await channel_from.send(`✅ **${embed.title}** Roster updated!`);
-                await run_msg.reactions.removeAll();
-                for (let emoji of roles) {
-                    try {
-                        await run_msg.react(emoji);
-                    } catch (exception) {
-                        // Message can't be found, might as well exit now
-                        if (exception.code === 10008) {
-                            logger.warn('Can\'t react on deleted message');
-                            return;
-                        }
-                        logger.error(exception.stack);
-                    }
-                }
-                await run_msg.react('🕒');
-                await run_msg.react('📝');
-                await run_msg.react('❌');
-            }
-        }
-
-        async function update_datetime(msg_id_embed, date_time) {
-            if (date_time != null) {
-                const embed = msg_id_embed.embed;
-                embed_update_date_time(embed, date_time);
-                const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
-                await run_msg.edit(embed);
-
-                const channel_from = await get_embed_channel_from(message.client, embed);
-                await channel_from.send(`✅ **${embed.title}**: Date and time updated!`);
-            }
-        }
-
-        async function update_note(msg_id_embed, note) {
-            if (note == null)
-                note = '\u200B';
-            const embed = msg_id_embed.embed;
-            embed_update_note(embed, note);
-            const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
-            embed_update_time_from_now(embed);
-            await run_msg.edit(embed);
-
-            const channel_from = await get_embed_channel_from(message.client, embed);
-            await channel_from.send(`✅ **${embed.title}**: Note updated!`);
-        }
-
-        async function add_reminder(msg_id_embed, reminder_minutes) {
-            const embed = msg_id_embed.embed;
-            embed_add_reminder(embed, reminder_minutes);
-            const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
-            embed_update_time_from_now(embed);
-            await run_msg.edit(embed);
-
-            const channel_from = await get_embed_channel_from(message.client, embed);
-            await channel_from.send(`✅ **${embed.title}**: Reminder updated!`);
-        }
-
-        async function clear_reminders(msg_id_embed) {
-            const embed = msg_id_embed.embed;
-
-            embed_clear_reminder(embed);
-            const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
-            embed_update_time_from_now(embed);
-            await run_msg.edit(embed);
-
-            const channel_from = await get_embed_channel_from(message.client, embed);
-            await channel_from.send(`✅ **${embed.title}**: Reminders cleared!`);
-        }
-
-        async function ping(embed, ping_message) {
-            const players = embed_get_players(embed);
-
-            const channel_from = await get_embed_channel_from(message.client, embed);
-            if (players.length > 0) {
-              const content = `📢 **${embed.title}**
-${players.join(' ')}
-
-${ping_message}`;
-                await channel_from.send(content);
-            } else {
-                await channel_from.send(`❌ **${embed.title}**: No one has signed up yet!`);
-            }
-        }
-
-        async function end_run(msg_id_embed) {
-            const embed = msg_id_embed.embed;
-            const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
-            await run_msg.delete();
-
-            const channel_archives = await get_channel(CHANNEL_RUN_ARCHIVES);
-            const channel_from = await get_embed_channel_from(message.client, embed);
-            embed.setColor("#009900");
-            await channel_archives.send(embed);
-
-            await delete_run_from_cache(message.client, msg_id_embed.message_id);
-            await channel_from.send(`✅ **${embed.title}** is over. Roster message has been archived!`);
-        }
-
-        async function add_player(msg_id_embed, player_user_id) {
-            if (player_user_id != null) {
-                const embed = msg_id_embed.embed;
-                const emojis = Array.from(embed_get_distinct_available_emojis(embed));
-                if (emojis.length == 0) {
-                    await message.channel.send(`❌ **${embed.title}**: There's no available role!`);
-                    return;
-                }
-                const questionRole =
-`👤 Please choose an available role:
-
-${emojis.map((elt, idx) => `\`${idx + 1}.\`    ${elt}`).join('\n')}
-`;
-                const questionRoleEmbed = new Discord.MessageEmbed().setTitle('Choose role').setDescription(questionRole);
-
-                const filter = m => m.author.id === message.author.id;
-                await message.channel.send(questionRoleEmbed)
-                .then(async choose_role_message => {
-                    await message.channel.awaitMessages(filter, { max: 1 })
-                    .then(async replies => {
-                        const reply = replies.first();
-                        const emoji_idx = parseInt(reply.content.trim());
-                        if (isNaN(emoji_idx) || emoji_idx <= 0 || emoji_idx > emojis.length) {
-                            await message.channel.send(`❌ **${embed.title}**: Invalid choice! Please enter a number between 1 and ${emojis.length}`);
-                            return;
-                        }
-                        const emoji_name = emojis[emoji_idx - 1];
-
-                        const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
-                        await update_user_to_roster(message.client, run_msg, player_user_id, emoji_name);
-                        await reply.delete();
-                        await choose_role_message.delete();
-                    });
-                });
-            }
-        }
-
-        async function remove_player(msg_id_embed, player_user_id) {
-            if (player_user_id != null) {
-                const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
-                await remove_user_from_roster(message.client, run_msg, player_user_id, '❌');
-            }
-        }
-
-        async function help(title, content) {
-            await message.client.help(message, title, content);
-        }
-
         if (args[0] === 'help') {
             const command = (args.length > 1) ? args[1] : null;
             if (command == null) {
-                help(`${PREFIX}run`,
+                message_help(message, `${PREFIX}run`,
 `Organize instances.
 
 Available \`${PREFIX}run\` commands:
@@ -1105,7 +1105,7 @@ Available \`${PREFIX}run\` commands:
 Type \`${PREFIX}run help COMMAND\` with the command of your choice for more info.`
                 );
             } else if (command === 'set-template-channel') {
-                help(`${PREFIX}run set-template-channel #channel`,
+                message_help(message, `${PREFIX}run set-template-channel #channel`,
 `Set the channel where template will be written.
 Template messages must follow this particular format:
 - The first line is the name of the template
@@ -1125,14 +1125,14 @@ LK ET 3 players only
 `
                 );
             } else if (command === 'set-archives-channel') {
-                help(`${PREFIX}run set-archives-channel #channel`,
+                message_help(message, `${PREFIX}run set-archives-channel #channel`,
 `Set the channel where closed runs will be archived.
 
 Example:
 \`\`\`${PREFIX}run set-archives-channel #archives\`\`\`
 `);
             } else if (command === 'new') {
-                help(`${PREFIX}new _RUN NAME_`,
+                message_help(message, `${PREFIX}new _RUN NAME_`,
 `Create a new run named _RUN NAME_.
 
 Example:
@@ -1149,7 +1149,7 @@ For example, if you create the new run from #runs to be posted on #roster, you w
 However, you will only be able to run commands such as \`${PREFIX}run add @user\` from #runs and #runs **ONLY**!
 `);
             } else if (command === 'add') {
-                help(`${PREFIX}run add <@user>`,
+                message_help(message, `${PREFIX}run add <@user>`,
 `Add someone to the roster.
 
 Example:
@@ -1160,7 +1160,7 @@ You'll then be asked to input the following:
 - Which emoji to assign that player`
 );
             } else if (command === 'remove') {
-                help(`${PREFIX}run remove <@user>`,
+                message_help(message, `${PREFIX}run remove <@user>`,
 `Remove someone from the roster.
 
 Example:
@@ -1169,7 +1169,7 @@ Example:
 If your channel is linked to multiple rosters, you'll then be asked to input which one to remove the player.
 `);
             } else if (command === 'char') {
-                help(`${PREFIX}run char <@user>`,
+                message_help(message, `${PREFIX}run char <@user>`,
 `Set someone's char name.
 
 Example:
@@ -1180,7 +1180,7 @@ You'll then be asked to input the following:
 - Char name for player roles, one at a time`
 );
             } else if (command === 'ping') {
-                help(`${PREFIX}run ping <MULTILINE MESSAGE>`,
+                message_help(message, `${PREFIX}run ping <MULTILINE MESSAGE>`,
 `Ping every players involved in a run.
 
 Example:
@@ -1193,7 +1193,7 @@ So get prepared and we'll go as soon as I'm online! 🙂
 If your channel is linked to multiple rosters, you'll then be asked to input which one to ping.
 `);
             } else if (command === 'note') {
-                help(`${PREFIX}run note <MULTILINE MESSAGE>`,
+                message_help(message, `${PREFIX}run note <MULTILINE MESSAGE>`,
 `Add a note to the roster message.
 
 Example:
@@ -1204,7 +1204,7 @@ CWPs will be provided thanks to our beloved sponsor @Hatfun \\o/
 If your channel is linked to multiple rosters, you'll then be asked to input which one to add note.
 `);
             } else if (command === 'set-roster') {
-                help(`${PREFIX}run set-roster <MULTILINE MESSAGE>`,
+                message_help(message, `${PREFIX}run set-roster <MULTILINE MESSAGE>`,
 `Replace the entire content of the roster (and players).
 
 Example:
@@ -1218,7 +1218,7 @@ Any role that can be picked **MUST** start by an emoji!
 If your channel is linked to multiple rosters, you'll then be asked to input which one to set roster.
 `);
             } else if (command === 'set-datetime') {
-                help(`${PREFIX}run set-datetime <datetime>`,
+                message_help(message, `${PREFIX}run set-datetime <datetime>`,
 `Resets the date and time of the event.
 The date and time of the event should be specified as **SERVER TIME**, format YYYY-MM-DD HH:mm (Example: 2021-08-05 04:00)
 
@@ -1228,7 +1228,7 @@ Example:
 If your channel is linked to multiple rosters, you'll then be asked to input which one to set date and time.
 `);
             } else if (command === 'add-reminder') {
-                help(`${PREFIX}run add-reminder <REMINDER>`,
+                message_help(message, `${PREFIX}run add-reminder <REMINDER>`,
 `Set a reminder, so the bot will automatically ping all players of a roster at a specific time.
 <REMINDER> has to follow the format \`NUMBER [days|hours|minutes] before\`
 
@@ -1241,7 +1241,7 @@ ${PREFIX}run add-reminder 90 minutes before
 If your channel is linked to multiple rosters, you'll then be asked to input which one to set date and time.
 `);
             } else if (command === 'clear-reminders') {
-                help(`${PREFIX}run clear-reminders`,
+                message_help(message, `${PREFIX}run clear-reminders`,
 `Clear all reminders of a run.
 
 Example:
@@ -1250,7 +1250,7 @@ Example:
 If your channel is linked to multiple rosters, you'll then be asked to input which one to set date and time.
 `);
             } else if (command === 'when') {
-                help(`${PREFIX}run when`,
+                message_help(message, `${PREFIX}run when`,
 `Displays the time of the run for a specific time zone.
 
 Example:
@@ -1263,7 +1263,7 @@ You'll then be asked to input the following:
 - Which time zone. Enter a number from the prompted list of time zones.
 `);
             } else if (command === 'end') {
-                help(`${PREFIX}run end`,
+                message_help(message, `${PREFIX}run end`,
 `Close a run.
 
 Example:
@@ -1274,7 +1274,7 @@ If your channel is linked to multiple rosters, you'll then be asked to input whi
 Closed run messages will be moved to the #archive channel specified by \`${PREFIX}run set-archives-channel #channel\`
 `);
             } else if (command === 'forget-channel') {
-                help(`${PREFIX}run forget-channel`,
+                message_help(message, `${PREFIX}run forget-channel`,
 `Forget a channel so it's no longer proposed as an option when creating new runs.
 A channel can only be forgotten if there's on ongoing run posted on that channel.
 
@@ -1336,7 +1336,7 @@ Example:
                 }
             }
         } else if (args[0] === 'new') {
-            if (!await validate_channels()) { return; }
+            if (!await message_validate_channels(message, guild_cache)) { return; }
 
             const run_name = args[1];
             if (run_name === undefined) {
@@ -1344,7 +1344,7 @@ Example:
                 return;
             }
 
-            const templates = await get_template_list();
+            const templates = await message_get_template_list(message, guild_cache);
             if (templates == null) { return; }
             const questionTemplate =
 `📄 Please choose a template for **${run_name}**:
@@ -1381,7 +1381,7 @@ ${templates.map((elt, idx) => `\`${idx + 1}.\` ${elt.title}`).join('\n')}
                             if (message_map != null && message.guild.id in message_map) {
                                 const channel_ids = Object.keys(message_map[message.guild.id]);
                                 for (const ch_id of channel_ids) {
-                                    const c = await get_channel_by_id(ch_id);
+                                    const c = await message_get_channel_by_id(message, ch_id);
                                     choice_channels.push(c);
                                 }
                             }
@@ -1402,7 +1402,7 @@ ${templates.map((elt, idx) => `\`${idx + 1}.\` ${elt.title}`).join('\n')}
                                     let channel_to;
                                     if (match = /<#(\d+)>/.exec(reply)) {
                                         const channel_to_id = match[1];
-                                        channel_to = await get_channel_by_id(channel_to_id);
+                                        channel_to = await message_get_channel_by_id(message_channel_to_id);
                                     } else {
                                         const channel_to_idx = parseInt(reply);
                                         if (isNaN(channel_to_idx) || channel_to_idx <= 0 || channel_to_idx > choice_channels.length) {
@@ -1426,7 +1426,7 @@ ${templates.map((elt, idx) => `\`${idx + 1}.\` ${elt.title}`).join('\n')}
                                         }
                                     }
 
-                                    await create_new_run(run_name, date_time_str, templates[choice - 1], message.channel, channel_to);
+                                    await message_create_new_run(message, run_name, date_time_str, templates[choice - 1], message.channel, channel_to);
                                 });
                             });
                         });
@@ -1446,7 +1446,7 @@ ${templates.map((elt, idx) => `\`${idx + 1}.\` ${elt.title}`).join('\n')}
                 await message.channel.send('❌ There\'s no run linked to this channel to set roster!');
             } else if (msg_id_embeds.length == 1) {
                 const msg_id_embed = msg_id_embeds[0];
-                await update_roster(msg_id_embed, roster);
+                await message_update_roster(message, msg_id_embed, roster);
             } else {
                 const questionRun =
 `📄 Please choose a run to apply this roster:
@@ -1467,7 +1467,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                             return;
                         }
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
-                        await update_roster(msg_id_embed, roster);
+                        await message_update_roster(message, msg_id_embed, roster);
                         await reply.delete();
                         await choose_run_message.delete();
                     });
@@ -1487,7 +1487,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send('❌ There\'s no run linked to this channel to ping players!');
             } else if (msg_id_embeds.length == 1) {
                 const msg_id_embed = msg_id_embeds[0];
-                await ping(msg_id_embed.embed, ping_message);
+                await message_ping(message, msg_id_embed.embed, ping_message);
             } else {
                 const questionRun =
 `📢 Please choose a run to ping players:
@@ -1507,7 +1507,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                             return;
                         }
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
-                        await ping(msg_id_embed.embed, ping_message);
+                        await message_ping(message, msg_id_embed.embed, ping_message);
                         await reply.delete();
                         await choose_run_message.delete();
                     });
@@ -1527,7 +1527,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send('❌ There\'s no run linked to this channel to set the date and time!');
             } else if (msg_id_embeds.length == 1) {
                 const msg_id_embed = msg_id_embeds[0];
-                await update_datetime(msg_id_embed, date_time);
+                await message_update_datetime(message, msg_id_embed, date_time);
             } else {
                 const questionRun =
 `📄 Please choose a run to apply this date and time:
@@ -1548,7 +1548,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                             return;
                         }
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
-                        await update_datetime(msg_id_embed, date_time);
+                        await message_update_datetime(message, msg_id_embed, date_time);
                         await reply.delete();
                         await choose_run_message.delete();
                     });
@@ -1568,7 +1568,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send('❌ There\'s no run linked to this channel to set note!');
             } else if (msg_id_embeds.length == 1) {
                 const msg_id_embed = msg_id_embeds[0];
-                await update_note(msg_id_embed, note);
+                await message_update_note(message, msg_id_embed, note);
             } else {
                 const questionRun =
 `📄 Please choose a run to apply this note:
@@ -1589,7 +1589,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                             return;
                         }
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
-                        await update_note(msg_id_embed, note);
+                        await message_update_note(message, msg_id_embed, note);
                         await reply.delete();
                         await choose_run_message.delete();
                     });
@@ -1632,7 +1632,7 @@ Examples:
                 await message.channel.send('❌ There\'s no run linked to this channel to add reminder!');
             } else if (msg_id_embeds.length == 1) {
                 const msg_id_embed = msg_id_embeds[0];
-                await add_reminder(msg_id_embed, reminder_minutes);
+                await message_add_reminder(message, msg_id_embed, reminder_minutes);
             } else {
                 const questionRun =
 `📄 Please choose a run to apply this reminder:
@@ -1653,14 +1653,14 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                             return;
                         }
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
-                        await add_reminder(msg_id_embed, reminder_minutes);
+                        await message_add_reminder(message, msg_id_embed, reminder_minutes);
                         await reply.delete();
                         await choose_run_message.delete();
                     });
                 });
             }
         } else if (args[0] === 'end') {
-            if (!await validate_channels()) { return; }
+            if (!await message_validate_channels(message, guild_cache)) { return; }
 
             // Get the list of runs that is linked to channel
             const msg_id_embeds = get_embeds_linked_to_channel(message.channel.id);
@@ -1668,7 +1668,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send('❌ There\'s no run linked to this channel to end!');
             } else if (msg_id_embeds.length == 1) {
                 const msg_id_embed = msg_id_embeds[0];
-                await end_run(msg_id_embed);
+                await message_end_run(message, msg_id_embed);
             } else {
                 const questionRun =
 `📄 Please choose a run to end:
@@ -1688,7 +1688,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                             return;
                         }
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
-                        await end_run(msg_id_embed);
+                        await message_end_run(message, msg_id_embed);
                     });
                 });
             }
@@ -1699,7 +1699,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send('❌ There\'s no run linked to this channel to clear reminders!');
             } else if (msg_id_embeds.length == 1) {
                 const msg_id_embed = msg_id_embeds[0];
-                await clear_reminders(msg_id_embed);
+                await message_clear_reminders(message, msg_id_embed);
             } else {
                 const questionRun =
 `📄 Please choose a run to clear reminders:
@@ -1719,7 +1719,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                             return;
                         }
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
-                        await clear_reminders(msg_id_embed);
+                        await message_clear_reminders(message, msg_id_embed);
                         await reply.delete();
                         await choose_run_message.delete();
                     });
@@ -1727,7 +1727,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
             }
         } else if (args[0] === 'add') {
             let match;
-            if ((match = /<@[!&]?(\d+)>/.exec(args[1])) == null) {
+            if ((match = /<@[!]?(\d+)>/.exec(args[1])) == null) {
                 await message.channel.send(`❌ Usage \`${PREFIX}run add @user\``);
                 return;
             }
@@ -1739,7 +1739,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send('❌ There\'s no run linked to this channel to add player!');
             } else if (msg_id_embeds.length == 1) {
                 const msg_id_embed = msg_id_embeds[0];
-                await add_player(msg_id_embed, player_user_id);
+                await message_add_player(message, msg_id_embed, player_user_id);
             } else {
                 const questionRun =
 `📄 Please choose a run to add this player:
@@ -1760,7 +1760,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                             return;
                         }
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
-                        await add_player(msg_id_embed, player_user_id);
+                        await message_add_player(message, msg_id_embed, player_user_id);
                         await reply.delete();
                         await choose_run_message.delete();
                     });
@@ -1768,7 +1768,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
             }
         } else if (args[0] === 'remove') {
             let match;
-            if ((match = /<@[!&]?(\d+)>/.exec(args[1])) == null) {
+            if ((match = /<@[!]?(\d+)>/.exec(args[1])) == null) {
                 await message.channel.send(`❌ Usage ${PREFIX}run remove @user`);
                 return;
             }
@@ -1780,7 +1780,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send('❌ There\'s no run linked to this channel to remove player!');
             } else if (msg_id_embeds.length == 1) {
                 const msg_id_embed = msg_id_embeds[0];
-                await remove_player(msg_id_embed, player_user_id);
+                await message_remove_player(message, msg_id_embed, player_user_id);
             } else {
                 const questionRun =
 `📄 Please choose a run to remove this player:
@@ -1801,7 +1801,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                             return;
                         }
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
-                        await remove_player(msg_id_embed, player_user_id);
+                        await message_remove_player(message, msg_id_embed, player_user_id);
                         await reply.delete();
                         await choose_run_message.delete();
                     });
@@ -1868,7 +1868,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
             await message.channel.send(`✅ The channel <#${channel_id}> will no longer be used for channel choices`);
         }  else if (args[0] === 'char') {
             let match;
-            if ((match = /<@[!&]?(\d+)>/.exec(args[1])) == null) {
+            if ((match = /<@[!]?(\d+)>/.exec(args[1])) == null) {
                 await message.channel.send(`❌ Usage \`${PREFIX}run char @user\``);
                 return;
             }
