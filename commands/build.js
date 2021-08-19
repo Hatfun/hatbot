@@ -364,7 +364,13 @@ const class_to_properties = {
 }
 
 function singular(word) {
-    return (word.length > 2 && word[word.length - 1].toLowerCase() == 's') ? word.substr(0, word.length - 1) : word;
+    if (word.length > 2) {
+        if (word.toLowerCase().endsWith("'s"))
+            return word.substr(0, word.length - 2);
+        if (word.toLowerCase().endsWith('s'))
+            return word.substr(0, word.length - 1);
+    }
+    return word;
 }
 
 async function refresh_calc_variable(file, variables) {
@@ -420,7 +426,7 @@ module.exports = {
     name: 'build',
     description: 'Save and share calc builds and skill builds',
     async setup(client) {
-        await refresh_calc_variables();
+        // await refresh_calc_variables();
     },
     async execute(message, args) {
         const BUILD = 'build'

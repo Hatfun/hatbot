@@ -79,7 +79,7 @@ Example:
             v8.writeHeapSnapshot(filepath);
 
             await message.channel.send(`✅ Created heap memory dump ${filename}`);
-        }  else if (args[0] === 'gc') {
+        } else if (args[0] === 'gc') {
             if (message.author.id != '281527853173178368') {
                 await message.channel.send(`❌ Sorry! Only <@281527853173178368> is allowed to run this command`);
                 return;
@@ -87,6 +87,13 @@ Example:
             global.gc();
 
             await message.channel.send(`✅ GC done`);
+        } else if (args[0] === 'write-embed') {
+            const space_idx = args[1].indexOf('\n');
+            const title = args[1].substring(0, space_idx);
+            const content = args[1].substring(space_idx + 1);
+
+            const embed = new Discord.MessageEmbed().setTitle(title).setDescription(content);
+            await message.channel.send(embed);
         }
     }
 }

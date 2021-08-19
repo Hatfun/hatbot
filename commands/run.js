@@ -8,6 +8,8 @@ const logger = require('../libs/logger.js')
 const GLOBAL_MESSAGE_MAP = 'run_global_message_map';
 const CHANNEL_TEMPLATE = 'run_template_channel';
 const CHANNEL_RUN_ARCHIVES = 'run_archives_channel';
+const CHANNEL_RUN_BOARD = 'run_board_channel';
+const BOARDS = 'run_boards';
 
 const global_embeds = new Discord.Collection();
 
@@ -34,6 +36,7 @@ const TIMEZONES = [
         { name: 'Kolkata',      flag: ':flag_in:',  tz: 'Asia/Kolkata' },
         { name: 'Omsk',         flag: ':flag_ru:',  tz: 'Asia/Omsk' },
         { name: 'Jakarta',      flag: ':flag_id:',  tz: 'Asia/Jakarta' },
+        { name: 'Kuala Lumpur', flag: ':flag_my:',  tz: 'Asia/Kuala_Lumpur' },
         { name: 'Manila',       flag: ':flag_ph:',  tz: 'Asia/Manila' }
     ]},
     { region: 'Australia', timezones: [
@@ -562,7 +565,7 @@ async function show_when(msg_id, user_id, channel, delete_prompt) {
 
     const question = `**${embed.title}** happens on **${when} Server Time!**
 
-Please choose your timezone:
+Please choose your timezone by entering a number between 1 and ${tz_array.length}:
 ${lines.join('\n')}
 `;
     const question_embed = new Discord.MessageEmbed().setTitle('🕒 Select timezone').setDescription(question);
@@ -611,6 +614,7 @@ async function process_reactions(client, run_message) {
         // const users = message_reaction.users.cache;
         for (const [user_id, user] of users) {
             if (user_id != client.user.id) {
+                logger.info(`process_reactions: ${user_id} reacted ${message_reaction.emoji.toString()} on msg ${message_reaction.message.id}`);
                 await process_reaction(message_reaction, user);
             }
         }
@@ -756,7 +760,7 @@ async function get_message_by_id_from_global_cache(client, message_id) {
     return null;
 }
 
-async function message_validate_channels(message, guild_cache) {
+async function message_validate_channels(message, guild_cache, PREFIX) {
     let errors = [];
     if (await guild_cache.get(CHANNEL_TEMPLATE) == null) {
         errors.push(`❌ Please set template channel by typing \`${PREFIX}run set-template-channel #channel\``);
@@ -771,8 +775,20 @@ async function message_validate_channels(message, guild_cache) {
     return true;
 }
 
-async function message_get_channel(message, guild_cache, channel_key) {
-    return message.client.discord_cache.getChannel(await guild_cache.get(channel_key));
+async function message_validate_board_channel(message, guild_cache, PREFIX) {
+    let errors = [];
+    if (await guild_cache.get(CHANNEL_RUN_BOARD) == null) {
+        errors.push(`❌ Please set board channel by typing \`${PREFIX}run set-board-channel #board\``);
+    }
+    if (errors.length > 0) {
+        await message.channel.send(errors);
+        return false;
+    }
+    return true;
+}
+
+async function client_get_channel(client, guild_cache, channel_key) {
+    return client.discord_cache.getChannel(await guild_cache.get(channel_key));
 }
 
 async function message_get_channel_by_id(message, channel_id) {
@@ -780,7 +796,7 @@ async function message_get_channel_by_id(message, channel_id) {
 }
 
 async function message_get_template_list(message, guild_cache) {
-    const channel = await message_get_channel(message, guild_cache, CHANNEL_TEMPLATE);
+    const channel = await client_get_channel(message.client, guild_cache, CHANNEL_TEMPLATE);
     const channel_messages = await channel.messages.fetch({ limit: 100 });
 
     const template_list = channel_messages.map(msg => {
@@ -816,7 +832,7 @@ async function message_add_message_to_global_cache(message, run_message, embed) 
     global_embeds.set(run_message.id, embed);
 }
 
-async function message_create_new_run(message, name, date_time_str, template, channel_from, channel_to) {
+async function message_create_new_run(message, guild_cache, name, date_time_str, template, channel_from, channel_to) {
     const date_time = moment.tz(date_time_str, "YYYY-MM-DD HH:mm", true, "Europe/Berlin");
     if (!date_time.isValid()) {
         await channel_from.send('❌ Invalid date! Example of accepted format: \`2021-08-25 15:30\`');
@@ -843,6 +859,7 @@ async function message_create_new_run(message, name, date_time_str, template, ch
     const run_message = await channel_to.send(embed);
 
     await message_add_message_to_global_cache(message, run_message, embed);
+    await client_refresh_board(message.client, guild_cache, message.guild.id, channel_to.id);
     await channel_from.send(`✅ **${name}** Successfully setup new run on <#${channel_to.id}>`);
     for (let emoji of roles) {
         try {
@@ -892,7 +909,7 @@ async function message_update_roster(message, msg_id_embed, roster) {
     }
 }
 
-async function message_update_datetime(message, msg_id_embed, date_time) {
+async function message_update_datetime(message, guild_cache, msg_id_embed, date_time) {
     if (date_time != null) {
         const embed = msg_id_embed.embed;
         embed_update_date_time(embed, date_time);
@@ -900,6 +917,7 @@ async function message_update_datetime(message, msg_id_embed, date_time) {
         await run_msg.edit(embed);
 
         const channel_from = await get_embed_channel_from(message.client, embed);
+        await message_refresh_board(message, guild_cache, run_msg.channel.id);
         await channel_from.send(`✅ **${embed.title}**: Date and time updated!`);
     }
 }
@@ -955,17 +973,19 @@ ${ping_message}`;
     }
 }
 
-async function message_end_run(message, msg_id_embed) {
+async function message_end_run(message, guild_cache, msg_id_embed) {
     const embed = msg_id_embed.embed;
     const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
+    const channel_to_id = run_msg.channel.id;
     await run_msg.delete();
 
-    const channel_archives = await message_get_channel(message, guild_cache, CHANNEL_RUN_ARCHIVES);
+    const channel_archives = await client_get_channel(message.client, guild_cache, CHANNEL_RUN_ARCHIVES);
     const channel_from = await get_embed_channel_from(message.client, embed);
     embed.setColor("#009900");
     await channel_archives.send(embed);
 
     await delete_run_from_cache(message.client, msg_id_embed.message_id);
+    await message_refresh_board(message, guild_cache, channel_to_id);
     await channel_from.send(`✅ **${embed.title}** is over. Roster message has been archived!`);
 }
 
@@ -1017,6 +1037,62 @@ async function message_help(message, title, content) {
     await message.client.help(message, title, content);
 }
 
+async function get_boards(guild_cache) {
+    const boards = await guild_cache.get(BOARDS);
+    return boards != null ? boards : {};
+}
+
+async function set_boards(guild_cache, boards) {
+    await guild_cache.set(BOARDS, boards);
+}
+
+async function client_refresh_board(client, guild_cache, guild_id, channel_id) {
+    const global_cache = client.getCache('global');
+    const boards = await get_boards(guild_cache);
+    if (!(channel_id in boards))
+        return;
+
+    const channel_board = await client_get_channel(client, guild_cache, CHANNEL_RUN_BOARD);
+    let bmessage = null;
+    try {
+        bmessage = await client.discord_cache.getMessage(channel_board.id, boards[channel_id]);
+    } catch (exception) {
+        return;
+    }
+
+    const runs = [];
+    const message_map = await global_cache.get(GLOBAL_MESSAGE_MAP);
+    if (message_map != null && guild_id in message_map && channel_id in message_map[guild_id]) {
+        const message_ids = message_map[guild_id][channel_id];
+
+        for (const message_id of message_ids) {
+            const embed_from_message = get_embed(message_id);
+            const embed_title = embed_from_message.title;
+
+            const full_when = embed_from_message.fields[FIELD_WHEN].name;
+            const when = full_when.substring(SERVER_TIME_PREFIX.length);
+            const date_time = moment.tz(when, 'MMMM Do YYYY h:mm A', 'Europe/Berlin');
+
+            runs.push({message_id: message_id, name: embed_title, date_time: date_time});
+        }
+    }
+
+   const content = runs.length == 0 ? 'Nothing happening' : runs
+        .sort((r1, r2) => r1.date_time.valueOf() - r2.date_time.valueOf())
+        .map(r => `• **${r.date_time.format('dddd MMMM Do [@] h:mm A')} -** [${r.name}](https://discord.com/channels/${guild_id}/${channel_id}/${r.message_id})`)
+        .join('\n\n');
+
+    const description = `Channel: <#${channel_id}>\n\n${content}`;
+    const embed = bmessage.embeds[0];
+    if (embed.description != description) {
+        embed.setDescription(description);
+        await bmessage.edit(embed);
+        logger.debug(`Refreshed board ${guild_id}/${channel_id}`);
+    } else {
+        logger.debug(`No need to refresh board ${guild_id}/${channel_id}`);
+    }
+}
+
 module.exports = {
     name: 'run',
     description: 'Utilities for organizing runs',
@@ -1030,7 +1106,6 @@ module.exports = {
         const messages_to_cleanup = [];
         for (const guild_id in message_map) {
             const guild = await client.discord_cache.getGuild(guild_id);
-
             for (const channel_id in message_map[guild_id]) {
                 const channel = await client.discord_cache.getChannel(channel_id);
                 for (let message_id_idx in message_map[guild_id][channel_id]) {
@@ -1046,18 +1121,27 @@ module.exports = {
                             messages_to_cleanup.push({ guild_id: guild_id, channel_id: channel_id, message_id: message_id });
                             logger.info(`setup: Message ${guild_id}/${channel_id}/${message_id} not found! Removing from cache`);
                         } else {
-                            logger.error(exception);
+                            logger.error(exception.stack);
                         }
                     }
                 }
             }
         }
+
         if (messages_to_cleanup.length > 0) {
             for (const m of messages_to_cleanup) {
                 const message_id_idx = message_map[m.guild_id][m.channel_id].indexOf(m.message_id);
                 message_map[m.guild_id][m.channel_id].splice(message_id_idx, 1);
             }
             await global_cache.set(GLOBAL_MESSAGE_MAP, message_map);
+        }
+
+        // refresh board after global_embed is set
+        for (const guild_id in message_map) {
+            const guild_cache = client.getCache(guild_id);
+            for (const channel_id in message_map[guild_id]) {
+                await client_refresh_board(client, guild_cache, guild_id, channel_id);
+            }
         }
 
         setInterval(async function() {
@@ -1069,6 +1153,7 @@ module.exports = {
         if (global_embeds.has(reaction.message.id)) {
             if (reaction.message.partial) await reaction.message.fetch();
             if (reaction.partial) await reaction.fetch();
+            logger.info(`onReaction: ${user.id} reacted ${reaction.emoji.toString()} on msg ${reaction.message.id}`);
 
             await process_reaction(reaction, user);
         }
@@ -1101,6 +1186,7 @@ Available \`${PREFIX}run\` commands:
 - when
 - end
 - forget-channel
+- set-board-channel
 \`\`\`
 Type \`${PREFIX}run help COMMAND\` with the command of your choice for more info.`
                 );
@@ -1132,7 +1218,7 @@ Example:
 \`\`\`${PREFIX}run set-archives-channel #archives\`\`\`
 `);
             } else if (command === 'new') {
-                message_help(message, `${PREFIX}new _RUN NAME_`,
+                message_help(message, `${PREFIX}run new _RUN NAME_`,
 `Create a new run named _RUN NAME_.
 
 Example:
@@ -1281,13 +1367,19 @@ A channel can only be forgotten if there's on ongoing run posted on that channel
 Example:
 \`\`\`${PREFIX}run forget-channel #roster\`\`\`
 `);
+            } else if (command === 'set-board-channel') {
+                message_help(message, `${PREFIX}run set-board-channel #channel`,
+`Set the channel where board will be displayed.
+
+Example:
+\`\`\`${PREFIX}run set-board-channel #board\`\`\`
+`);
             }
         } else if (args[0] === 'set-template-channel') {
             if (args[1] == null) {
                 await message.channel.send(`❌ Please provide a template channel. Usage: \`${PREFIX}run set-template-channel #channel\``);
                 return;
             }
-            const cache = message.client.getCache(message.guild.id);
             const channel_id = args[1].slice(2, -1);
 
             try {
@@ -1299,7 +1391,7 @@ Example:
                     return;
                 }
 
-                await cache.set(CHANNEL_TEMPLATE, channel.id);
+                await guild_cache.set(CHANNEL_TEMPLATE, channel.id);
                 await message.channel.send(`✅ Successfully set template channel to <#${channel.id}>`);
             } catch (exception) {
                 if (exception.code === 50001) {
@@ -1315,7 +1407,6 @@ Example:
                 await message.channel.send(`❌ Please provide a archives channel. Usage: \`${PREFIX}run set-archives-channel #channel\``);
                 return;
             }
-            const cache = message.client.getCache(message.guild.id);
             const channel_id = args[1].slice(2, -1);
 
             try {
@@ -1325,7 +1416,7 @@ Example:
                     await message.channel.send(`❌ Bot doesn't have access to channel ${args[1]}!`);
                     return;
                 }
-                await cache.set(CHANNEL_RUN_ARCHIVES, channel.id);
+                await guild_cache.set(CHANNEL_RUN_ARCHIVES, channel.id);
                 await message.channel.send(`✅ Successfully set archives channel to <#${channel.id}>`);
             } catch (exception) {
                 if (exception.code === 50001) {
@@ -1335,8 +1426,32 @@ Example:
                     throw exception;
                 }
             }
+        }  else if (args[0] === 'set-board-channel') {
+            if (args[1] == null) {
+                await message.channel.send(`❌ Please provide a board channel. Usage: \`${PREFIX}run set-board-channel #channel\``);
+                return;
+            }
+            const channel_id = args[1].slice(2, -1);
+
+            try {
+                const channel = await message.client.discord_cache.getChannel(channel_id);
+                await message.guild.roles.fetch();
+                if (!channel.permissionsFor(message.client.user).has("VIEW_CHANNEL")) {
+                    await message.channel.send(`❌ Bot doesn't have access to channel ${args[1]}!`);
+                    return;
+                }
+                await guild_cache.set(CHANNEL_RUN_BOARD, channel.id);
+                await message.channel.send(`✅ Successfully set board channel to <#${channel.id}>`);
+            } catch (exception) {
+                if (exception.code === 50001) {
+                    await message.channel.send(`❌ Bot doesn't have access to channel ${args[1]}!`);
+                    return;
+                } else {
+                    throw exception;
+                }
+            }
         } else if (args[0] === 'new') {
-            if (!await message_validate_channels(message, guild_cache)) { return; }
+            if (!await message_validate_channels(message, guild_cache, PREFIX)) { return; }
 
             const run_name = args[1];
             if (run_name === undefined) {
@@ -1402,7 +1517,7 @@ ${templates.map((elt, idx) => `\`${idx + 1}.\` ${elt.title}`).join('\n')}
                                     let channel_to;
                                     if (match = /<#(\d+)>/.exec(reply)) {
                                         const channel_to_id = match[1];
-                                        channel_to = await message_get_channel_by_id(message_channel_to_id);
+                                        channel_to = await message_get_channel_by_id(message, channel_to_id);
                                     } else {
                                         const channel_to_idx = parseInt(reply);
                                         if (isNaN(channel_to_idx) || channel_to_idx <= 0 || channel_to_idx > choice_channels.length) {
@@ -1426,7 +1541,7 @@ ${templates.map((elt, idx) => `\`${idx + 1}.\` ${elt.title}`).join('\n')}
                                         }
                                     }
 
-                                    await message_create_new_run(message, run_name, date_time_str, templates[choice - 1], message.channel, channel_to);
+                                    await message_create_new_run(message, guild_cache, run_name, date_time_str, templates[choice - 1], message.channel, channel_to);
                                 });
                             });
                         });
@@ -1527,7 +1642,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send('❌ There\'s no run linked to this channel to set the date and time!');
             } else if (msg_id_embeds.length == 1) {
                 const msg_id_embed = msg_id_embeds[0];
-                await message_update_datetime(message, msg_id_embed, date_time);
+                await message_update_datetime(message, guild_cache, msg_id_embed, date_time);
             } else {
                 const questionRun =
 `📄 Please choose a run to apply this date and time:
@@ -1548,7 +1663,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                             return;
                         }
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
-                        await message_update_datetime(message, msg_id_embed, date_time);
+                        await message_update_datetime(message, guild_cache, msg_id_embed, date_time);
                         await reply.delete();
                         await choose_run_message.delete();
                     });
@@ -1660,7 +1775,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 });
             }
         } else if (args[0] === 'end') {
-            if (!await message_validate_channels(message, guild_cache)) { return; }
+            if (!await message_validate_channels(message, guild_cache, PREFIX)) { return; }
 
             // Get the list of runs that is linked to channel
             const msg_id_embeds = get_embeds_linked_to_channel(message.channel.id);
@@ -1668,7 +1783,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send('❌ There\'s no run linked to this channel to end!');
             } else if (msg_id_embeds.length == 1) {
                 const msg_id_embed = msg_id_embeds[0];
-                await message_end_run(message, msg_id_embed);
+                await message_end_run(message, guild_cache, msg_id_embed);
             } else {
                 const questionRun =
 `📄 Please choose a run to end:
@@ -1688,7 +1803,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                             return;
                         }
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
-                        await message_end_run(message, msg_id_embed);
+                        await message_end_run(message, guild_cache, msg_id_embed);
                     });
                 });
             }
@@ -1906,6 +2021,91 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                         await choose_run_message.delete();
                     });
                 });
+            }
+        } else if (args[0] === 'add-board') {
+            if (!message_validate_board_channel(message, guild_cache, PREFIX)) {
+                return;
+            }
+            let match = null;
+            if (args[1] == null || (match = /^<#(\d+)>\s+(.*)$/.exec(args[1])) == null) {
+                await message.channel.send(`❌ Usage: \`${PREFIX}run add-board <#channel> <name>\``);
+                return;
+            }
+            const channel_id = match[1];
+            const title = match[2].trim();
+
+            const channel_board = await client_get_channel(message.client, guild_cache, CHANNEL_RUN_BOARD);
+            const global_cache = message.client.getCache('global');
+
+            const boards = await get_boards(guild_cache);
+            if (boards[channel_id] != null) {
+                try {
+                    const bmessage = await message.client.discord_cache.getMessage(channel_board.id, boards[channel_id]);
+                    if (bmessage != null) {
+                        await message.channel.send(`❌ Board has already been set up for <#${channel_id}>`);
+                        return;
+                    }
+                } catch (exception) {
+                }
+            }
+
+            const runs = [];
+            const message_map = await global_cache.get(GLOBAL_MESSAGE_MAP);
+            if (message_map != null && message.guild.id in message_map && channel_id in message_map[message.guild.id]) {
+                const message_ids = message_map[message.guild.id][channel_id];
+
+                for (const message_id of message_ids) {
+                    const embed_from_message = get_embed(message_id);
+                    const embed_title = embed_from_message.title;
+
+                    const full_when = embed_from_message.fields[FIELD_WHEN].name;
+                    const when = full_when.substring(SERVER_TIME_PREFIX.length);
+                    const date_time = moment.tz(when, 'MMMM Do YYYY h:mm A', 'Europe/Berlin');
+
+                    runs.push({message_id: message_id, name: embed_title, date_time: date_time});
+                }
+            }
+            const content = runs.length == 0 ? 'Nothing happening' : runs
+                .sort((r1, r2) => r1.date_time.valueOf() - r2.date_time.valueOf())
+                .map(r => `• **${r.date_time.format('dddd MMMM Do [@] h:mm A')} -** [${r.name}](https://discord.com/channels/${message.guild.id}/${channel_id}/${r.message_id})`)
+                .join('\n\n');
+
+            const embed = new Discord.MessageEmbed()
+                .setTitle(title)
+                .setDescription(`Channel: <#${channel_id}>\n\n${content}`);
+
+            const board_message = await channel_board.send(embed);
+
+            boards[channel_id] = board_message.id;
+            await set_boards(guild_cache, boards);
+            await message.channel.send(`✅ Board has been successfully set up for <#${channel_id}>!`);
+        } else if (args[0] === 'remove-board') {
+            if (!message_validate_board_channel(message, guild_cache, PREFIX)) {
+                return;
+            }
+            let match = null;
+            if (args[1] == null || (match = /^<#(\d+)>$/.exec(args[1])) == null) {
+                await message.channel.send(`❌ Usage: \`${PREFIX}run add-board <#channel>\``);
+                return;
+            }
+            const channel_id = match[1];
+
+            const channel_board = await client_get_channel(message.client, guild_cache, CHANNEL_RUN_BOARD);
+            const boards = await get_boards(guild_cache);
+
+            if (boards[channel_id] != null) {
+                try {
+                    const bmessage = await message.client.discord_cache.getMessage(channel_board.id, boards[channel_id]);
+                    if (bmessage != null) {
+                        await bmessage.delete();
+                    }
+                } catch (exception) {
+                }
+                delete boards[channel_id];
+                await set_boards(guild_cache, boards);
+                await message.channel.send(`✅ Board has been successfully removed for <#${channel_id}>!`);
+            } else {
+                await message.channel.send(`✅ Cannot find board for <#${channel_id}>!`);
             }
         }
     }

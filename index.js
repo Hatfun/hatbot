@@ -197,7 +197,7 @@ client.once('ready', async () => {
             try {
                 await command.setup(client);
             } catch (exception) {
-                logger.error(exception);
+                logger.error(exception.stack);
             }
         }
     }
@@ -233,7 +233,7 @@ client.on('messageReactionAdd', async (reaction, user) => {
             try {
                 await command.onReaction(reaction, user);
             } catch (exception) {
-                logger.error(exception);
+                logger.error(exception.stack);
             }
         }
     }
