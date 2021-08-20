@@ -426,7 +426,7 @@ module.exports = {
     name: 'build',
     description: 'Save and share calc builds and skill builds',
     async setup(client) {
-        // await refresh_calc_variables();
+        await refresh_calc_variables();
     },
     async execute(message, args) {
         const BUILD = 'build'

@@ -9,6 +9,7 @@ const GLOBAL_MESSAGE_MAP = 'run_global_message_map';
 const CHANNEL_TEMPLATE = 'run_template_channel';
 const CHANNEL_RUN_ARCHIVES = 'run_archives_channel';
 const CHANNEL_RUN_BOARD = 'run_board_channel';
+const ROLE_MENTIONS = 'run_role_mentions';
 const BOARDS = 'run_boards';
 
 const global_embeds = new Discord.Collection();
@@ -37,13 +38,30 @@ const TIMEZONES = [
         { name: 'Omsk',         flag: ':flag_ru:',  tz: 'Asia/Omsk' },
         { name: 'Jakarta',      flag: ':flag_id:',  tz: 'Asia/Jakarta' },
         { name: 'Kuala Lumpur', flag: ':flag_my:',  tz: 'Asia/Kuala_Lumpur' },
-        { name: 'Manila',       flag: ':flag_ph:',  tz: 'Asia/Manila' }
+        { name: 'Manila',       flag: ':flag_ph:',  tz: 'Asia/Manila' },
+        { name: 'Singapore',    flag: ':flag_sg:',  tz: 'Asia/Singapore' }
     ]},
     { region: 'Australia', timezones: [
         { name: 'Adelaide',     flag: ':flag_au:',  tz: 'Australia/Adelaide' },
         { name: 'Sydney',       flag: ':flag_au:',  tz: 'Australia/Sydney' }
     ]}
 ];
+
+function flexible_parse_date(date_str) {
+    // Old style
+    let date_time = moment.tz(date_str, 'MMMM Do YYYY h:mm A', 'Europe/Berlin');
+    if (!date_time.isValid()) {
+        // New style. moment() always assumes it's for current year.
+        date_time = moment.tz(date_str, 'dddd MMMM Do [@] h:mm A', 'Europe/Berlin');
+        // Try to parse next year, assuming that day of the week is NEVER the same on year n + 1
+        if (!date_time.isValid()) {
+            date_time = moment.tz((moment().year() + 1) + " " + date_str, 'YYYY dddd MMMM Do [@] h:mm A', 'Europe/Berlin');
+            if (!date_time.isValid())
+                return null;
+        }
+    }
+    return date_time;
+}
 
 function get_embed(message_id) {
     return global_embeds.get(message_id);
@@ -60,13 +78,16 @@ function embed_update_roster(embed, roster) {
 function embed_update_time_from_now(embed) {
     const full_when = embed.fields[FIELD_WHEN].name;
     const when = full_when.substring(SERVER_TIME_PREFIX.length);
-    const date_time = moment.tz(when, 'MMMM Do YYYY h:mm A', 'Europe/Berlin');
+    const date_time = flexible_parse_date(when);
 
     embed.fields[FIELD_WHEN].value = readable_date_from_now(date_time);
 }
 
 function embed_update_date_time(embed, date_time) {
-    const when = `${SERVER_TIME_PREFIX}${date_time.format('MMMM Do YYYY h:mm A')}`;
+    // Old style
+    // const when = `${SERVER_TIME_PREFIX}${date_time.format('MMMM Do YYYY h:mm A')}`;
+    // New style
+    const when = `${SERVER_TIME_PREFIX}${date_time.format('dddd MMMM Do [@] h:mm A')}`;
     embed.fields[FIELD_WHEN].name = when;
 
     embed_update_time_from_now(embed);
@@ -75,7 +96,7 @@ function embed_update_date_time(embed, date_time) {
 function embed_is_update_time_from_now_needed(embed) {
     const full_when = embed.fields[FIELD_WHEN].name;
     const when = full_when.substring(SERVER_TIME_PREFIX.length);
-    const date_time = moment.tz(when, 'MMMM Do YYYY h:mm A', 'Europe/Berlin');
+    const date_time = flexible_parse_date(when);
 
     const duration = moment.duration(date_time.diff(moment().subtract(1, 'minutes')));
 
@@ -143,7 +164,7 @@ function embed_add_reminder(embed, reminder_minutes) {
     const readable = reminder_to_readable(reminder_minutes);
     const full_when = embed.fields[FIELD_WHEN].name;
     const when = full_when.substring(SERVER_TIME_PREFIX.length);
-    const date_time = moment.tz(when, 'MMMM Do YYYY h:mm A', 'Europe/Berlin');
+    const date_time = flexible_parse_date(when);
 
     let reminder_idx = embed_find_field_index_by_name(embed, 'Reminders');
     if (reminder_idx == -1) {
@@ -158,7 +179,7 @@ function embed_add_reminder(embed, reminder_minutes) {
     } else {
         embed.fields[reminder_idx].value += `\n• ${readable}`;
     }
-    const lines = embed.fields[reminder_idx].value.split('\n');
+    const lines = [... new Set(embed.fields[reminder_idx].value.split('\n'))];
     lines.sort((r1_str, r2_str) => {
         const r1 = parse_reminder(r1_str.substring(2));
         const r2 = parse_reminder(r2_str.substring(2));
@@ -548,7 +569,7 @@ async function show_when(msg_id, user_id, channel, delete_prompt) {
     const embed = get_embed(msg_id);
     const full_when = embed.fields[FIELD_WHEN].name;
     const when = full_when.substring(SERVER_TIME_PREFIX.length);
-    const date_time = moment.tz(when, 'MMMM Do YYYY h:mm A', 'Europe/Berlin');
+    const date_time = flexible_parse_date(when);
     const from_now = readable_date_from_now(date_time);
 
     const tz_array = [];
@@ -580,7 +601,7 @@ ${lines.join('\n')}
     }
 
     const timezone = tz_array[choice - 1];
-    const converted_date_time = date_time.clone().tz(timezone.tz).format('dddd MMMM Do YYYY [@] h:mm A');
+    const converted_date_time = date_time.clone().tz(timezone.tz).format('dddd MMMM Do [@] h:mm A');
     const time_embed = new Discord.MessageEmbed()
         .setTitle(`🕒  ${embed.title}`)
         .setDescription(`${timezone.flag}  This run will happen on\n**${converted_date_time} ${timezone.name} time**!\n${from_now}`);
@@ -660,7 +681,7 @@ async function check_and_update_reminders(client, embed) {
     const reminder_minutes = parse_reminder(line.substring(2));
     const full_when = embed.fields[FIELD_WHEN].name;
     const when = full_when.substring(SERVER_TIME_PREFIX.length);
-    const date_time = moment.tz(when, 'MMMM Do YYYY h:mm A', 'Europe/Berlin').subtract(reminder_minutes, 'm');
+    const date_time = flexible_parse_date(when).subtract(reminder_minutes, 'm');
     if (date_time.isBefore(moment())) {
         embed_update_time_from_now(embed);
         lines.splice(0, 1);
@@ -760,6 +781,28 @@ async function get_message_by_id_from_global_cache(client, message_id) {
     return null;
 }
 
+async function get_role_mentions(guild_cache) {
+    const role_mentions = await guild_cache.get(ROLE_MENTIONS);
+    return role_mentions == null ? [] : role_mentions;
+}
+
+async function add_role_mentions(guild_cache, role_mention) {
+    const role_mentions = await get_role_mentions(guild_cache);
+    if (!role_mentions.includes(role_mention)) {
+        role_mentions.push(role_mention);
+    }
+    await guild_cache.set(ROLE_MENTIONS, role_mentions);
+}
+
+async function remove_role_mentions(guild_cache, role_mention) {
+    const role_mentions = await get_role_mentions(guild_cache);
+    const role_mention_idx = role_mentions.indexOf(role_mention);
+    if (role_mention_idx >= 0) {
+        role_mentions.splice(role_mention_idx, 1);
+    }
+    await guild_cache.set(ROLE_MENTIONS, role_mentions);
+}
+
 async function message_validate_channels(message, guild_cache, PREFIX) {
     let errors = [];
     if (await guild_cache.get(CHANNEL_TEMPLATE) == null) {
@@ -832,7 +875,7 @@ async function message_add_message_to_global_cache(message, run_message, embed) 
     global_embeds.set(run_message.id, embed);
 }
 
-async function message_create_new_run(message, guild_cache, name, date_time_str, template, channel_from, channel_to) {
+async function message_create_new_run(message, guild_cache, name, date_time_str, template, channel_from, channel_to, role_ping) {
     const date_time = moment.tz(date_time_str, "YYYY-MM-DD HH:mm", true, "Europe/Berlin");
     if (!date_time.isValid()) {
         await channel_from.send('❌ Invalid date! Example of accepted format: \`2021-08-25 15:30\`');
@@ -856,7 +899,7 @@ async function message_create_new_run(message, guild_cache, name, date_time_str,
     embed_update_number_of_players(embed);
     embed_update_date_time(embed, date_time);
     const roles = embed_get_distinct_roles(embed);
-    const run_message = await channel_to.send(embed);
+    const run_message = await channel_to.send(role_ping, [embed]);
 
     await message_add_message_to_global_cache(message, run_message, embed);
     await client_refresh_board(message.client, guild_cache, message.guild.id, channel_to.id);
@@ -917,7 +960,7 @@ async function message_update_datetime(message, guild_cache, msg_id_embed, date_
         await run_msg.edit(embed);
 
         const channel_from = await get_embed_channel_from(message.client, embed);
-        await message_refresh_board(message, guild_cache, run_msg.channel.id);
+        await client_refresh_board(message.client, guild_cache, message.guild.id, run_msg.channel.id);
         await channel_from.send(`✅ **${embed.title}**: Date and time updated!`);
     }
 }
@@ -985,7 +1028,7 @@ async function message_end_run(message, guild_cache, msg_id_embed) {
     await channel_archives.send(embed);
 
     await delete_run_from_cache(message.client, msg_id_embed.message_id);
-    await message_refresh_board(message, guild_cache, channel_to_id);
+    await client_refresh_board(message.client, guild_cache, message.guild.id, channel_to_id);
     await channel_from.send(`✅ **${embed.title}** is over. Roster message has been archived!`);
 }
 
@@ -1071,7 +1114,7 @@ async function client_refresh_board(client, guild_cache, guild_id, channel_id) {
 
             const full_when = embed_from_message.fields[FIELD_WHEN].name;
             const when = full_when.substring(SERVER_TIME_PREFIX.length);
-            const date_time = moment.tz(when, 'MMMM Do YYYY h:mm A', 'Europe/Berlin');
+            const date_time = flexible_parse_date(when);
 
             runs.push({message_id: message_id, name: embed_title, date_time: date_time});
         }
@@ -1114,7 +1157,8 @@ module.exports = {
                         const run_message = await client.discord_cache.getMessage(channel_id, message_id);
                         global_embeds.set(run_message.id, run_message.embeds[0]);
                         // Process reactions that happened during downtime
-                        await process_reactions(client, run_message);
+                        // No await here, we don't want to block execution
+                        process_reactions(client, run_message).catch((exception) => logger.error(exception.stack));
                     } catch (exception) {
                         if (exception.code === 10008) {
                             // Remove from cache if not found
@@ -1489,6 +1533,11 @@ ${templates.map((elt, idx) => `\`${idx + 1}.\` ${elt.title}`).join('\n')}
                                 await message.channel.send('❌ Invalid date! Example of accepted format: \`2021-08-25 15:30\`');
                                 return;
                             }
+                            const year_diff = date_time.year() - moment.tz("Europe/Berlin").year();
+                            if (year_diff < 0 || year_diff > 1) {
+                                await message.channel.send('❌ Year must be either the current year, or next year!');
+                                return;
+                            }
 
                             const global_cache = message.client.getCache('global');
                             const message_map = await global_cache.get(GLOBAL_MESSAGE_MAP);
@@ -1541,7 +1590,27 @@ ${templates.map((elt, idx) => `\`${idx + 1}.\` ${elt.title}`).join('\n')}
                                         }
                                     }
 
-                                    await message_create_new_run(message, guild_cache, run_name, date_time_str, templates[choice - 1], message.channel, channel_to);
+                                    let questionRolePing = `📢 Please provide a @mention or @role to notify about **${run_name}**.\n\n`;
+                                    const role_mentions = await get_role_mentions(guild_cache);
+                                    const role_pings = ['No mention', '@here', '@everyone'].concat(role_mentions);
+
+                                    const role_ping_choices = role_pings.map((elt, idx) => `\`${idx}.\` ${elt}`).join('\n');
+                                    questionRolePing += role_ping_choices;
+
+                                    const questionRole = new Discord.MessageEmbed().setTitle('Mention').setDescription(questionRolePing);
+                                    await message.channel.send(questionRole)
+                                    .then(async () => {
+                                        await message.channel.awaitMessages(filter, { max: 1 })
+                                        .then(async c4 => {
+                                            const role_idx = parseInt(c4.first().content);
+                                            if (isNaN(role_idx) || role_idx < 0 || role_idx >= role_pings.length) {
+                                                await message.channel.send(`❌ Invalid choice! Please enter a number between 0 and ${role_pings.length - 1}`);
+                                                return;
+                                            }
+                                            const role_ping = role_idx == 0 ? '' : role_pings[role_idx];
+                                            await message_create_new_run(message, guild_cache, run_name, date_time_str, templates[choice - 1], message.channel, channel_to, role_ping);
+                                        });
+                                    });
                                 });
                             });
                         });
@@ -1794,16 +1863,19 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
 
                 const filter = m => m.author.id === message.author.id;
                 await message.channel.send(questionRunEmbed)
-                .then(async () => {
+                .then(async choose_run_message => {
                     await message.channel.awaitMessages(filter, { max: 1 })
-                    .then(async reply => {
-                        const run_idx = parseInt(reply.first().content.trim());
+                    .then(async replies => {
+                        const reply = replies.first();
+                        const run_idx = parseInt(reply.content.trim());
                         if (isNaN(run_idx) || run_idx <= 0 || run_idx > msg_id_embeds.length) {
                             await message.channel.send(`❌ Invalid choice! Please enter a number between 1 and ${msg_id_embeds.length}`);
                             return;
                         }
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
                         await message_end_run(message, guild_cache, msg_id_embed);
+                        await reply.delete();
+                        await choose_run_message.delete();
                     });
                 });
             }
@@ -1827,8 +1899,9 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send(questionRunEmbed)
                 .then(async choose_run_message => {
                     await message.channel.awaitMessages(filter, { max: 1 })
-                    .then(async reply => {
-                        const run_idx = parseInt(reply.first().content.trim());
+                    .then(async replies => {
+                        const reply = replies.first();
+                        const run_idx = parseInt(reply.content.trim());
                         if (isNaN(run_idx) || run_idx <= 0 || run_idx > msg_id_embeds.length) {
                             await message.channel.send(`❌ Invalid choice! Please enter a number between 1 and ${msg_id_embeds.length}`);
                             return;
@@ -2060,7 +2133,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
 
                     const full_when = embed_from_message.fields[FIELD_WHEN].name;
                     const when = full_when.substring(SERVER_TIME_PREFIX.length);
-                    const date_time = moment.tz(when, 'MMMM Do YYYY h:mm A', 'Europe/Berlin');
+                    const date_time = flexible_parse_date(when);
 
                     runs.push({message_id: message_id, name: embed_title, date_time: date_time});
                 }
@@ -2107,6 +2180,22 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
             } else {
                 await message.channel.send(`✅ Cannot find board for <#${channel_id}>!`);
             }
+        } else if (args[0] === 'add-role-mention') {
+            if (args[1] == null || /^<@&(\d+)>$/.exec(args[1]) == null) {
+                await message.channel.send(`❌ Usage: \`${PREFIX}run add-role-mention <@role>\``);
+                return;
+            }
+            const role = args[1];
+            await add_role_mentions(guild_cache, role);
+            await message.channel.send(`✅ ${role} will be added to the list of possible roles to mention when creating a new run!`);
+        } else if (args[0] === 'remove-role-mention') {
+            if (args[1] == null || /^<@&(\d+)>$/.exec(args[1]) == null) {
+                await message.channel.send(`❌ Usage: \`${PREFIX}run remove-role-mention <@role>\``);
+                return;
+            }
+            const role = args[1];
+            await remove_role_mentions(guild_cache, role);
+            await message.channel.send(`✅ ${role} will no longer be listed to the possible roles to mention when creating a new run!`);
         }
     }
 }

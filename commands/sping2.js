@@ -58,7 +58,7 @@ async function remove_sping(cache, arg) {
 
 module.exports = {
     name: 'sping2',
-    description: 'Utilities for organizing runs',
+    description: 'Small ping utility',
     async setup(client) {
         const cache = client.getCache('global');
 
