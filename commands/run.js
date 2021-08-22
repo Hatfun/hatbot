@@ -13,6 +13,9 @@ const ROLE_MENTIONS = 'run_role_mentions';
 const BOARDS = 'run_boards';
 
 const global_embeds = new Discord.Collection();
+const user_busy = new Set();
+
+const TIMEOUT_MS = 120000;
 
 const FIELD_WHEN = 0;
 const FIELD_CHANNEL = 1;
@@ -46,6 +49,18 @@ const TIMEZONES = [
         { name: 'Sydney',       flag: ':flag_au:',  tz: 'Australia/Sydney' }
     ]}
 ];
+
+function set_user_busy(user_id, guild_id, channel_id) {
+    user_busy.add(`${user_id}|${guild_id}|${channel_id}`);
+}
+
+function is_user_busy(user_id, guild_id, channel_id) {
+    return user_busy.has(`${user_id}|${guild_id}|${channel_id}`);
+}
+
+function set_user_free(user_id, guild_id, channel_id) {
+    user_busy.delete(`${user_id}|${guild_id}|${channel_id}`);
+}
 
 function flexible_parse_date(date_str) {
     // Old style
@@ -439,6 +454,48 @@ function embed_change_role_for_user_and_role(embed, user_id, old_role, new_role)
     return updated;
 }
 
+function embed_swap_roles(embed, user_id_1, role_1, user_id_2, role_2) {
+    const lines = embed.description.split('\n');
+    let line_1 = null;
+    let line_2 = null;
+    for (let i = 0; i < lines.length; ++i) {
+        const unicodeRegex = emojiRegex();
+        const hasEmoteRegex = /^(<a?:.+?:\d+>).+$/gm
+
+        const line = lines[i];
+        let match;
+        let emoji = null;
+        if ((match = unicodeRegex.exec(line)) && match.index === 0) {
+            emoji = match[0];
+        } else if ((match = hasEmoteRegex.exec(line)) && match.index === 0) {
+            emoji = match[1];
+        }
+        if (emoji != null && (match = /<@[!]?(\d+)>/.exec(line)) != null) {
+            const match_user_id = match[1];
+            if (match_user_id === user_id_1) {
+                const role = line.slice(0, match.index);
+                const rest_of_line = line.slice(match.index);
+
+                if (role == role_1 && line_1 == null) {
+                    line_1 = { idx: i, role: role, rest_of_line: rest_of_line };
+                }
+            }
+            if (match_user_id === user_id_2) {
+                const role = line.slice(0, match.index);
+                const rest_of_line = line.slice(match.index);
+
+                if (role == role_2 && line_2 == null) {
+                    line_2 = { idx: i, role: role, rest_of_line: rest_of_line };
+                }
+            }
+        }
+    }
+    lines[line_1.idx] = `${line_1.role}${line_2.rest_of_line}`;
+    lines[line_2.idx] = `${line_2.role}${line_1.rest_of_line}`;
+
+    embed.description = lines.join('\n');
+}
+
 async function get_embed_channel_from(client, embed) {
     const channel_id = embed_get_channel_from_id(embed);
     const channel_from = await client.discord_cache.getChannel(channel_id);
@@ -561,28 +618,47 @@ function clean_role(role) {
     return cleaned;
 }
 
-async function update_char_name_to_roster_by_message_id(client, message_id, player_id, channel, user) {
+async function update_char_name_to_roster_by_message_id(client, message_id, player_id, channel, user, messages_to_delete) {
     const embed = get_embed(message_id);
     const channel_id = embed_get_channel_from_id(embed);
     const message = await client.discord_cache.getMessage(channel_id, message_id);
-    await update_char_name_to_roster(client, message, player_id, channel, user);
+    await update_char_name_to_roster(client, message, player_id, channel, user, messages_to_delete);
 }
 
-async function update_char_name_to_roster(client, msg, player_id, channel, user) {
+async function update_char_name_to_roster(client, msg, player_id, channel, user, messages_to_delete) {
     const embed = get_embed(msg.id);
     const roles = embed_get_roles_for_user(embed, player_id);
 
     const filter = m => m.author.id == user.id;
     const char_names = [];
+    let timed_out = false;
     for (const role of roles) {
         const question = `**${embed.title}**
 Please enter char name for **${clean_role(role.role)}**:`;
         const question_embed = new Discord.MessageEmbed().setTitle('📝 Char name').setDescription(question);
 
-        await channel.send(question_embed);
-        const reply = await channel.awaitMessages(filter, { max: 1 });
-        const char_name = reply.first().content;
-        char_names.push({ role: role.role, char_name: char_name });
+        const question_message = await channel.send(question_embed);
+        if (messages_to_delete != null) {
+            messages_to_delete.push(question_message);
+        }
+        await channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
+        .then(async reply => {
+            if (messages_to_delete != null) {
+                messages_to_delete.push(reply.first());
+            }
+            const char_name = reply.first().content;
+            char_names.push({ role: role.role, char_name: char_name });
+        })
+        .catch(async exception => {
+            if (exception instanceof Error) {
+                throw exception;
+            } else {
+                await channel.send(`❌ ${user.id == null ? '' : '<@' + user.id +'> '}Command timed out! 🐢`);
+                timed_out = true;
+            }
+        });
+        if (timed_out)
+            return;
     }
 
     const added_char_names = embed_update_char_name_for_user_and_role(embed, player_id, char_names);
@@ -597,10 +673,13 @@ Please enter char name for **${clean_role(role.role)}**:`;
         }
         await channel_from.send(`✅ **${embed.title}**: Set char name${s} for <@${player_id}>:
 ${added_char_names.join('\n')}`);
+        if (messages_to_delete != null) {
+            await bulkDelete(channel_from, messages_to_delete);
+        }
     }
 }
 
-async function show_when(msg_id, user_id, channel, delete_prompt) {
+async function show_when(msg_id, user_id, channel, delete_prompt, messages_to_delete) {
     const embed = get_embed(msg_id);
     const full_when = embed.fields[FIELD_WHEN].name;
     const when = full_when.substring(SERVER_TIME_PREFIX.length);
@@ -626,25 +705,25 @@ ${lines.join('\n')}
 `;
     const question_embed = new Discord.MessageEmbed().setTitle('🕒 Select timezone').setDescription(question);
 
-    const filter = m => m.author.id == user_id;
+    const filter = filter_number(channel, user_id, 1, tz_array.length, messages_to_delete);
     const question_msg = await channel.send(question_embed);
-    const reply = await channel.awaitMessages(filter, { max: 1 });
-    const choice = parseInt(reply.first().content);
-    if (isNaN(choice) || choice <= 0 || choice > tz_array.length) {
-        await channel.send(`❌ Invalid choice! Please try again, then enter a number between 1 and ${tz_array.length}`);
-        return;
+    if (messages_to_delete != null) {
+        messages_to_delete.push(question_msg);
     }
+    await channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
+    .then(async reply => {
+        const choice = parseInt(reply.first().content);
 
-    const timezone = tz_array[choice - 1];
-    const converted_date_time = date_time.clone().tz(timezone.tz).format('dddd MMMM Do [@] h:mm A');
-    const time_embed = new Discord.MessageEmbed()
-        .setTitle(`🕒  ${embed.title}`)
-        .setDescription(`${timezone.flag}  This run will happen on\n**${converted_date_time} ${timezone.name} time**!\n${from_now}`);
-    await channel.send(time_embed);
-    if (delete_prompt) {
-        await reply.first().delete();
-        await question_msg.delete();
-    }
+        const timezone = tz_array[choice - 1];
+        const converted_date_time = date_time.clone().tz(timezone.tz).format('dddd MMMM Do [@] h:mm A');
+        const time_embed = new Discord.MessageEmbed()
+            .setTitle(`🕒  ${embed.title}`)
+            .setDescription(`${timezone.flag}  This run will happen on\n**${converted_date_time} ${timezone.name} time**!\n${from_now}`);
+        await channel.send(time_embed);
+        if (delete_prompt) {
+            await bulkDelete(channel, messages_to_delete);
+        }
+    }).catch(timeout_function(channel, user_id));
 }
 
 async function process_reaction(reaction, user) {
@@ -910,13 +989,7 @@ async function message_add_message_to_global_cache(message, run_message, embed) 
     global_embeds.set(run_message.id, embed);
 }
 
-async function message_create_new_run(message, guild_cache, name, date_time_str, template, channel_from, channel_to, role_ping) {
-    const date_time = moment.tz(date_time_str, "YYYY-MM-DD HH:mm", true, "Europe/Berlin");
-    if (!date_time.isValid()) {
-        await channel_from.send('❌ Invalid date! Example of accepted format: \`2021-08-25 15:30\`');
-        return;
-    }
-
+async function message_create_new_run(message, guild_cache, name, date_time, template, channel_from, channel_to, role_ping, messages_to_delete) {
     const embed = new Discord.MessageEmbed()
         .setColor('#0099ff')
         .setTitle(name)
@@ -926,10 +999,8 @@ async function message_create_new_run(message, guild_cache, name, date_time_str,
             { name: '\u200B', value: '\u200B', inline: true },
             { name: 'Channel', value: `<#${channel_from.id}>`, inline: true },
             // { name: '\u200B', value: '\u200B' },
-            { name: '\u200B', value: `Pick an available role by choosing the corresponding reaction.
-🕒 To get DM'ed the date and time of the run in your local time.
-📝 To register your char name, then reply to DM.
-❌ To remove yourself from signup.` },
+            { name: '\u200B', value: `React to signup!
+🕒 = When | 📝 = Char name | ❌ = Remove` },
         );
     embed_update_number_of_players(embed);
     embed_update_date_time(embed, date_time);
@@ -938,11 +1009,12 @@ async function message_create_new_run(message, guild_cache, name, date_time_str,
     await message_add_message_to_global_cache(message, run_message, embed);
     await client_refresh_board(message.client, guild_cache, message.guild.id, channel_to.id);
     await channel_from.send(`✅ **${name}** Successfully setup new run on <#${channel_to.id}>`);
-
-    await reset_reactions(run_message, embed);
+    await bulkDelete(message.channel, messages_to_delete);
+    // Don't await here
+    reset_reactions(run_message, embed);
 }
 
-async function message_update_roster(message, msg_id_embed, roster) {
+async function message_update_roster(message, msg_id_embed, roster, messages_to_delete) {
     if (roster != null) {
         const embed = msg_id_embed.embed;
         embed_update_roster(embed, roster);
@@ -952,8 +1024,8 @@ async function message_update_roster(message, msg_id_embed, roster) {
         await run_msg.edit(embed);
 
         // Confirmation before working with reactions
-        const channel_from = await get_embed_channel_from(message.client, embed);
-        await channel_from.send(`✅ **${embed.title}** Roster updated!`);
+        await message.channel.send(`✅ **${embed.title}** Roster updated!`);
+        await bulkDelete(message.channel, messages_to_delete);
         await reset_reactions(run_msg, embed);
     }
 }
@@ -991,8 +1063,7 @@ async function message_add_reminder(message, msg_id_embed, reminder_minutes) {
     embed_update_time_from_now(embed);
     await run_msg.edit(embed);
 
-    const channel_from = await get_embed_channel_from(message.client, embed);
-    await channel_from.send(`✅ **${embed.title}**: Reminder updated!`);
+    await message.channel.send(`✅ **${embed.title}**: Reminder updated!`);
 }
 
 async function message_clear_reminders(message, msg_id_embed) {
@@ -1003,8 +1074,7 @@ async function message_clear_reminders(message, msg_id_embed) {
     embed_update_time_from_now(embed);
     await run_msg.edit(embed);
 
-    const channel_from = await get_embed_channel_from(message.client, embed);
-    await channel_from.send(`✅ **${embed.title}**: Reminders cleared!`);
+    await message.channel.send(`✅ **${embed.title}**: Reminders cleared!`);
 }
 
 async function message_ping(message, embed, ping_message) {
@@ -1031,6 +1101,7 @@ async function message_end_run(message, guild_cache, msg_id_embed) {
     const channel_archives = await client_get_channel(message.client, guild_cache, CHANNEL_RUN_ARCHIVES);
     const channel_from = await get_embed_channel_from(message.client, embed);
     embed.setColor("#009900");
+    embed.fields.splice(embed.fields.length - 1, 1);
     await channel_archives.send(embed);
 
     await delete_run_from_cache(message.client, msg_id_embed.message_id);
@@ -1038,7 +1109,7 @@ async function message_end_run(message, guild_cache, msg_id_embed) {
     await channel_from.send(`✅ **${embed.title}** is over. Roster message has been archived!`);
 }
 
-async function message_add_player(message, msg_id_embed, player_user_id) {
+async function message_add_player(message, msg_id_embed, player_user_id, messages_to_delete) {
     if (player_user_id != null) {
         const embed = msg_id_embed.embed;
         const emojis = Array.from(embed_get_distinct_available_emojis(embed));
@@ -1053,23 +1124,19 @@ ${emojis.map((elt, idx) => `\`${idx + 1}.\`    ${elt}`).join('\n')}
 `;
         const questionRoleEmbed = new Discord.MessageEmbed().setTitle('Choose role').setDescription(questionRole);
 
-        const filter = m => m.author.id === message.author.id;
+        const filter = filter_number(message.channel, message.author.id, 1, emojis.length, messages_to_delete);
         await message.channel.send(questionRoleEmbed)
         .then(async choose_role_message => {
+            messages_to_delete.push(choose_role_message);
             await message.channel.awaitMessages(filter, { max: 1 })
             .then(async replies => {
                 const reply = replies.first();
                 const emoji_idx = parseInt(reply.content.trim());
-                if (isNaN(emoji_idx) || emoji_idx <= 0 || emoji_idx > emojis.length) {
-                    await message.channel.send(`❌ **${embed.title}**: Invalid choice! Please enter a number between 1 and ${emojis.length}`);
-                    return;
-                }
                 const emoji_name = emojis[emoji_idx - 1];
 
                 const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
                 await update_user_to_roster(message.client, run_msg, player_user_id, emoji_name);
-                await reply.delete();
-                await choose_role_message.delete();
+                await bulkDelete(message.channel, messages_to_delete);
             });
         });
     }
@@ -1102,28 +1169,43 @@ async function reset_reactions(run_msg, embed) {
     await run_msg.react('❌');
 }
 
-async function message_change_role(message, msg_id_embed, player_user_id, new_role) {
+async function bulkDelete(channel, messages_to_delete) {
+    if (messages_to_delete != null) {
+        await channel.bulkDelete(messages_to_delete);
+    }
+}
+
+function distinct_roles(user_roles) {
+    const map = new Map();
+    for (const user_role of user_roles) {
+        if (!map.has(user_role.emoji)) {
+            map.set(user_role.emoji, user_role);
+        }
+    }
+    return Array.from(map.values());
+}
+
+async function message_change_role(message, msg_id_embed, player_user_id, new_role, messages_to_delete) {
     if (player_user_id != null) {
         const embed = msg_id_embed.embed;
         const user_roles = embed_get_roles_for_user(embed, player_user_id);
         const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
 
-        const map = new Map();
-        for (const user_role of user_roles) {
-            if (!map.has(user_role.emoji)) {
-                map.set(user_role.emoji, user_role);
-            }
-        }
-        const distinct_user_roles = Array.from(map.values());
+        const distinct_user_roles = distinct_roles(user_roles);
 
-        if (distinct_user_roles.length == 1) {
+        if (distinct_user_roles.length == 0) {
+            await message.channel.send(`❌ **${embed.title}**: Cannot find any role for <@${player_user_id}>!`);
+            await bulkDelete(message.channel, messages_to_delete);
+        } else if (distinct_user_roles.length == 1) {
             if (embed_change_role_for_user_and_role(embed, player_user_id, user_roles[0].role, new_role)) {
                 await run_msg.edit(embed);
                 message.channel.send(`✅ **${embed.title}**: <@${player_user_id}>'s role ${clean_role(user_roles[0].role)} has been changed to ${clean_role(new_role)}!`);
 
                 await reset_reactions(run_msg, embed);
+                await bulkDelete(message.channel, messages_to_delete);
             } else {
-                message.channel.send(`❌ **${embed.title}**: Failed to change role!`);
+                await message.channel.send(`❌ **${embed.title}**: Failed to change role!`);
+                await bulkDelete(message.channel, messages_to_delete);
             }
         } else if (distinct_user_roles.length > 1) {
             const questionRole =
@@ -1133,34 +1215,90 @@ ${distinct_user_roles.map((elt, idx) => `\`${idx + 1}.\`    ${elt.emoji}`).join(
 `;
             const questionRoleEmbed = new Discord.MessageEmbed().setTitle('Choose role').setDescription(questionRole);
 
-            const filter = m => m.author.id === message.author.id;
+            const filter = filter_number(message.channel, message.author.id, 1, distinct_user_roles.length, messages_to_delete);
             await message.channel.send(questionRoleEmbed)
             .then(async choose_role_message => {
+                messages_to_delete.push(choose_role_message);
                 await message.channel.awaitMessages(filter, { max: 1 })
                 .then(async replies => {
                     const reply = replies.first();
                     const user_role_idx = parseInt(reply.content.trim());
-                    await reply.delete();
-                    await choose_role_message.delete();
-
-                    if (isNaN(user_role_idx) || user_role_idx <= 0 || user_role_idx > distinct_user_roles.length) {
-                        await message.channel.send(`❌ **${embed.title}**: Invalid choice! Please enter a number between 1 and ${distinct_user_roles.length}`);
-                        return;
-                    }
                     const user_role = distinct_user_roles[user_role_idx - 1];
 
                     if (embed_change_role_for_user_and_role(embed, player_user_id, user_role.role, new_role)) {
                         await run_msg.edit(embed);
-                        message.channel.send(`✅ **${embed.title}**: <@${player_user_id}>'s role ${clean_role(user_role.role)} has been changed to ${clean_role(new_role)}!`);
-
+                        await message.channel.send(`✅ **${embed.title}**: <@${player_user_id}>'s role ${clean_role(user_role.role)} has been changed to ${clean_role(new_role)}!`);
+                        await bulkDelete(message.channel, messages_to_delete);
                         await reset_reactions(run_msg, embed);
                     } else {
-                        message.channel.send(`❌ **${embed.title}**: Failed to change role!`);
+                        await message.channel.send(`❌ **${embed.title}**: Failed to change role!`);
+                        await bulkDelete(message.channel, messages_to_delete);
                     }
                 });
             });
         }
     }
+}
+
+async function message_swap_players(message, msg_id_embed, user_id_1, user_id_2, messages_to_delete) {
+    const embed = msg_id_embed.embed;
+    const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
+    const roles_1 = embed_get_roles_for_user(embed, user_id_1);
+    const roles_2 = embed_get_roles_for_user(embed, user_id_2);
+
+    let role_1;
+    let role_2;
+    if (roles_1.length == 0) {
+        await message.channel.send(`❌ **${embed.title}**: <@${user_id_1}> doesn't have any role!`);
+        await bulkDelete(message.channel, messages_to_delete);
+        return;
+    }
+    if (roles_2.length == 0) {
+        await message.channel.send(`❌ **${embed.title}**: <@${user_id_2}> doesn't have any role!`);
+        await bulkDelete(message.channel, messages_to_delete);
+        return;
+    }
+    if (roles_1.length == 1) {
+        role_1 = roles_1[0];
+    } else if (roles_1.length > 1) {
+        const distinct_user_roles_1 = distinct_roles(roles_1);
+        const questionRole =
+`👤 Please choose <@${user_id_1}>'s role to update:
+
+${distinct_user_roles_1.map((elt, idx) => `\`${idx + 1}.\`    ${elt.emoji}`).join('\n')}
+`;
+        const questionRoleEmbed = new Discord.MessageEmbed().setTitle('Choose role').setDescription(questionRole);
+
+        const filter = filter_number(message.channel, message.author.id, 1, distinct_user_roles_1.length, messages_to_delete);
+        const choose_role_message = await message.channel.send(questionRoleEmbed);
+        messages_to_delete.push(choose_role_message);
+        const replies = await message.channel.awaitMessages(filter, { max: 1 });
+        const reply = replies.first();
+        role_1 = distinct_user_roles_1[parseInt(reply.content.trim()) - 1];
+    }
+    if (roles_2.length == 1) {
+        role_2 = roles_2[0];
+    } else if (roles_2.length > 1) {
+        const distinct_user_roles_2 = distinct_roles(roles_2);
+        const questionRole =
+`👤 Please choose <@${user_id_2}>'s role to update:
+
+${distinct_user_roles_2.map((elt, idx) => `\`${idx + 1}.\`    ${elt.emoji}`).join('\n')}
+`;
+        const questionRoleEmbed = new Discord.MessageEmbed().setTitle('Choose role').setDescription(questionRole);
+
+        const filter = filter_number(message.channel, message.author.id, 1, distinct_user_roles_2.length, messages_to_delete);
+        const choose_role_message = await message.channel.send(questionRoleEmbed);
+        messages_to_delete.push(choose_role_message);
+        const replies = await message.channel.awaitMessages(filter, { max: 1 });
+        const reply = replies.first();
+        role_2 = distinct_user_roles_2[parseInt(reply.content.trim()) - 1];
+    }
+
+    embed_swap_roles(embed, user_id_1, role_1.role, user_id_2, role_2.role);
+    await run_msg.edit(embed);
+    await message.channel.send(`✅ **${embed.title}**: [${role_1.emoji} <@${user_id_1}> and ${role_2.emoji} <@${user_id_2}>] swapped to [${role_1.emoji} <@${user_id_2}> and ${role_2.emoji} <@${user_id_1}>]`);
+    await bulkDelete(message.channel, messages_to_delete);
 }
 
 async function message_help(message, title, content) {
@@ -1221,6 +1359,125 @@ async function client_refresh_board(client, guild_cache, guild_id, channel_id) {
     } else {
         logger.debug(`No need to refresh board ${guild_id}/${channel_id}`);
     }
+}
+
+function filter_number(channel, author_id, min_value, max_value, messages_to_delete) {
+    return async m => {
+        try {
+            if (m.author.id != author_id) {
+                return false;
+            }
+            if (messages_to_delete != null) {
+                messages_to_delete.push(m);
+            }
+            const run_idx = parseInt(m.content.trim());
+            if (isNaN(run_idx) || run_idx < min_value || run_idx > max_value) {
+                const message_invalid = await channel.send(`❌ Invalid choice! Please enter a number between ${min_value} and ${max_value}`);
+                if (messages_to_delete != null) {
+                    messages_to_delete.push(message_invalid);
+                }
+                return false;
+            }
+
+            return true;
+        } catch (exception) {
+            logger.error(exception.stack);
+            return false;
+        }
+    };
+}
+
+function filter_date(channel, author_id, messages_to_delete) {
+    return async m => {
+        try {
+            if (m.author.id != author_id) {
+                return false;
+            }
+
+            if (messages_to_delete != null) {
+                messages_to_delete.push(m);
+            }
+
+            const date_time_str = m.content.trim();
+            const date_time = moment.tz(date_time_str, "YYYY-MM-DD HH:mm", true, "Europe/Berlin");
+            if (!date_time.isValid()) {
+                const message_invalid = await channel.send('❌ Invalid date! Example of accepted format: \`2021-08-25 15:30\`');
+                if (messages_to_delete != null) {
+                    messages_to_delete.push(message_invalid);
+                }
+                return false;
+            }
+            const year_diff = date_time.year() - moment.tz("Europe/Berlin").year();
+            if (year_diff < 0 || year_diff > 1) {
+                const message_invalid = await channel.send('❌ Year must be either the current year, or next year!');
+                if (messages_to_delete != null) {
+                    messages_to_delete.push(message_invalid);
+                }
+                return false;
+            }
+
+            return true;
+        } catch (exception) {
+            logger.error(exception.stack);
+            return false;
+        }
+    };
+}
+
+function filter_channel(message, author_id, choice_channels, messages_to_delete) {
+    return async m => {
+        try {
+            if (m.author.id != author_id) {
+                return false;
+            }
+            if (messages_to_delete != null) {
+                messages_to_delete.push(m);
+            }
+            const reply = m.content.trim();
+            let match;
+            let channel_to;
+            if (match = /<#(\d+)>/.exec(reply)) {
+                const channel_to_id = match[1];
+                try {
+                    channel_to = await message_get_channel_by_id(message, channel_to_id);
+                } catch (exception) {
+                    channel_to = null;
+                }
+            } else {
+                const channel_to_idx = parseInt(reply);
+                if (isNaN(channel_to_idx) || channel_to_idx <= 0 || channel_to_idx > choice_channels.length) {
+                    const message_invalid = await message.channel.send(`❌ Invalid choice! Please enter a number between 1 and ${choice_channels.length}, or enter a #channel`);
+                    if (messages_to_delete != null) {
+                        messages_to_delete.push(message_invalid);
+                    }
+                    return false;
+                }
+                channel_to = choice_channels[channel_to_idx - 1];
+            }
+            if (channel_to == null) {
+                const message_invalid = await message.channel.send(`❌ Cannot access channel ${reply}. Please provide a channel that the bot can view and write.`);
+                if (messages_to_delete != null) {
+                    messages_to_delete.push(message_invalid);
+                }
+                return false;
+            }
+
+            return true;
+        } catch (exception) {
+            logger.error(exception.stack);
+            return false;
+        }
+    };
+}
+
+function timeout_function(channel, user_id) {
+    return async exception => {
+        if (exception instanceof Error) {
+            throw exception;
+        } else {
+            await channel.send(`❌ ${user_id == null ? '' : '<@' + user_id +'> '}Command timed out! 🐢`);
+        }
+    };
 }
 
 module.exports = {
@@ -1302,12 +1559,18 @@ module.exports = {
 
 Available \`${PREFIX}run\` commands:
 \`\`\`
+Admin/Setup:
 - set-template-channel
 - set-archives-channel
+- set-board-channel
+- forget-channel
+- add-board
+- remove-board
+- add-role-mention
+- remove-role-mention
+
+Organizing party:
 - new
-- add
-- remove
-- char
 - ping
 - note
 - set-roster
@@ -1315,9 +1578,12 @@ Available \`${PREFIX}run\` commands:
 - add-reminder
 - clear-reminders
 - when
+- add
+- remove
+- char
+- change-role
+- swap
 - end
-- forget-channel
-- set-board-channel
 \`\`\`
 Type \`${PREFIX}run help COMMAND\` with the command of your choice for more info.`
                 );
@@ -1359,6 +1625,7 @@ You'll then be asked to input the following:
 - Which template to use (enter the number corresponding to the desired template)
 - The date and time of the event, **SERVER TIME**, format YYYY-MM-DD HH:mm (Example: 2021-08-05 16:30)
 - The channel where the roster message will be posted, or a number corresponding to an existing channel. (Example: #roster)
+- The role or mention to ping (enter the number corresponding to the desired role/mention)
 
 ⚠️ IMPORTANT
 The channel on which the run is created will be the only channel able to interact with that particular run.
@@ -1371,7 +1638,6 @@ However, you will only be able to run commands such as \`${PREFIX}run add @user\
 
 Example:
 \`\`\`${PREFIX}run add @Hatfun\`\`\`
-
 You'll then be asked to input the following:
 - If your channel is linked to multiple rosters, which one to add the player
 - Which emoji to assign that player`
@@ -1382,7 +1648,6 @@ You'll then be asked to input the following:
 
 Example:
 \`\`\`${PREFIX}run remove @Hatfun\`\`\`
-
 If your channel is linked to multiple rosters, you'll then be asked to input which one to remove the player.
 `);
             } else if (command === 'char') {
@@ -1391,7 +1656,6 @@ If your channel is linked to multiple rosters, you'll then be asked to input whi
 
 Example:
 \`\`\`${PREFIX}run char @Hatfun\`\`\`
-
 You'll then be asked to input the following:
 - If your channel is linked to multiple rosters, which one to add the player
 - Char name for player roles, one at a time`
@@ -1406,7 +1670,6 @@ Hello!
 I'll be online a few minutes late. But my char is ready!
 So get prepared and we'll go as soon as I'm online! 🙂
 \`\`\`
-
 If your channel is linked to multiple rosters, you'll then be asked to input which one to ping.
 `);
             } else if (command === 'note') {
@@ -1417,7 +1680,6 @@ Example:
 \`\`\`${PREFIX}run note
 CWPs will be provided thanks to our beloved sponsor @Hatfun \\o/
 \`\`\`
-
 If your channel is linked to multiple rosters, you'll then be asked to input which one to add note.
 `);
             } else if (command === 'set-roster') {
@@ -1430,7 +1692,6 @@ Example:
 ✝️ HP:
 ✝️ HP:
 \`\`\`
-
 Any role that can be picked **MUST** start by an emoji!
 If your channel is linked to multiple rosters, you'll then be asked to input which one to set roster.
 `);
@@ -1441,7 +1702,6 @@ The date and time of the event should be specified as **SERVER TIME**, format YY
 
 Example:
 \`\`\`${PREFIX}run set-datetime 2021-08-06 18:30\`\`\`
-
 If your channel is linked to multiple rosters, you'll then be asked to input which one to set date and time.
 `);
             } else if (command === 'add-reminder') {
@@ -1453,8 +1713,10 @@ Examples:
 \`\`\`${PREFIX}run add-reminder 2 days before
 ${PREFIX}run add-reminder 2 hours before
 ${PREFIX}run add-reminder 90 minutes before
+${PREFIX}run add-reminder 2 days 3 hours before
+${PREFIX}run add-reminder 1 day 12 hours before
+${PREFIX}run add-reminder 1 hour 30 minutes before
 \`\`\`
-
 If your channel is linked to multiple rosters, you'll then be asked to input which one to set date and time.
 `);
             } else if (command === 'clear-reminders') {
@@ -1463,7 +1725,6 @@ If your channel is linked to multiple rosters, you'll then be asked to input whi
 
 Example:
 \`\`\`${PREFIX}run clear-reminders\`\`\`
-
 If your channel is linked to multiple rosters, you'll then be asked to input which one to set date and time.
 `);
             } else if (command === 'when') {
@@ -1472,9 +1733,6 @@ If your channel is linked to multiple rosters, you'll then be asked to input whi
 
 Example:
 \`\`\`${PREFIX}run when\`\`\`
-
-If your channel is linked to multiple rosters, you'll then be asked to input which one to set date and time.
-
 You'll then be asked to input the following:
 - If your channel is linked to multiple rosters, which one to display time
 - Which time zone. Enter a number from the prompted list of time zones.
@@ -1485,7 +1743,6 @@ You'll then be asked to input the following:
 
 Example:
 \`\`\`${PREFIX}run end\`\`\`
-
 If your channel is linked to multiple rosters, you'll then be asked to input which one to set date and time.
 
 Closed run messages will be moved to the #archive channel specified by \`${PREFIX}run set-archives-channel #channel\`
@@ -1493,7 +1750,7 @@ Closed run messages will be moved to the #archive channel specified by \`${PREFI
             } else if (command === 'forget-channel') {
                 message_help(message, `${PREFIX}run forget-channel`,
 `Forget a channel so it's no longer proposed as an option when creating new runs.
-A channel can only be forgotten if there's on ongoing run posted on that channel.
+A channel can only be forgotten if there's no ongoing run posted on that channel.
 
 Example:
 \`\`\`${PREFIX}run forget-channel #roster\`\`\`
@@ -1504,6 +1761,57 @@ Example:
 
 Example:
 \`\`\`${PREFIX}run set-board-channel #board\`\`\`
+`);
+            } else if (command === 'add-board') {
+                message_help(message, `${PREFIX}run add-board #channel NAME`,
+`Add a board to the board channel that keeps track of all the events posted on roster channel #channel.
+NAME will be used as the title of the board.
+
+Example:
+\`\`\`${PREFIX}run add-board #et-roster Endless Tower\`\`\`
+`);
+            } else if (command === 'remove-board') {
+                message_help(message, `${PREFIX}run remove-board #channel`,
+`Remove the board of roster channel #channel from the board channel.
+
+Example:
+\`\`\`${PREFIX}run remove-board #et-roster\`\`\`
+`);
+            } else if (command === 'change-role') {
+                message_help(message, `${PREFIX}run change-role [@user] <emoji and name>`,
+`Update the line up to change the signed up role of @user into a new role <emoji and name>. The new role MUST start with an emoji.
+If @user is not provided, the sender of the command will be used as user.
+
+Examples:
+\`\`\`${PREFIX}run change-role 🔫 GS
+${PREFIX}run change-role @Hatfun 🔫 GS
+\`\`\`
+If your channel is linked to multiple rosters, you'll then be asked to input which one to set date and time.
+`);
+            } else if (command === 'swap') {
+                message_help(message, `${PREFIX}run swap <@user_1> <@user_2>`,
+`Update the line up to change the signed up role of @user into a new role <emoji and name>. The new role MUST start with an emoji.
+If @user is not provided, the sender of the command will be used as user.
+
+Example:
+\`\`\`${PREFIX}run swap @Hatfun @Sleepy\`\`\`
+You might then be asked to input the following:
+- If your channel is linked to multiple rosters, which one to display time
+- If the users signed up for multiple roles, which role should be swapped
+`);
+            } else if (command === 'add-role-mention') {
+                message_help(message, `${PREFIX}run add-role-mention @role`,
+`Add a role to the list of roles/mentions that can be pinged when you create a new run.
+
+Example:
+\`\`\`${PREFIX}run add-role-mention @EndlessTowerRole\`\`\`
+`);
+            } else if (command === 'remove-role-mention') {
+                message_help(message, `${PREFIX}run remove-role-mention @role`,
+`Remove a role from the list of roles/mentions that can be pinged when you create a new run.
+
+Example:
+\`\`\`${PREFIX}run remove-role-mention @EndlessTowerRole\`\`\`
 `);
             }
         } else if (args[0] === 'set-template-channel') {
@@ -1583,12 +1891,13 @@ Example:
             }
         } else if (args[0] === 'new') {
             if (!await message_validate_channels(message, guild_cache, PREFIX)) { return; }
-
             const run_name = args[1];
             if (run_name === undefined) {
                 await message.channel.send(`❌ Please provide a name. Usage: \`${PREFIX}run new RUN NAME\``);
                 return;
             }
+            if (is_user_busy(message.author.id, message.guild.id, message.channel.id)) { return; }
+            set_user_busy(message.author.id, message.guild.id, message.channel.id);
 
             const templates = await message_get_template_list(message, guild_cache);
             if (templates == null) { return; }
@@ -1598,33 +1907,24 @@ Example:
 ${templates.map((elt, idx) => `\`${idx + 1}.\` ${elt.title}`).join('\n')}
 `;
             const questionTemplateEmbed = new Discord.MessageEmbed().setTitle('New run').setDescription(questionTemplate);
-            const filter = m => m.author.id === message.author.id;
+            const messages_to_delete = [];
+            const template_number_filter = filter_number(message.channel, message.author.id, 1, templates.length, messages_to_delete);
             await message.channel.send(questionTemplateEmbed)
-            .then(async () => {
-                await message.channel.awaitMessages(filter, { max: 1 })
+            .then(async choose_template_message => {
+                messages_to_delete.push(choose_template_message);
+                await message.channel.awaitMessages(template_number_filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
                 .then(async c1 => {
-                    const choice = parseInt(c1.first().content);
-                    if (isNaN(choice) || choice <= 0 || choice > templates.length) {
-                        await message.channel.send(`❌ Invalid choice! Please input a number between 1 and ${templates.length}`);
-                        return;
-                    }
+                    const template = templates[parseInt(c1.first().content) - 1];
                     const questionDateTime = `🕒 When is **${run_name}** going to happen Server Time?\n(YYYY-MM-DD HH:mm)`;
                     const questionDateTimeEmbed = new Discord.MessageEmbed().setTitle('Date & Time').setDescription(questionDateTime);
+                    const date_filter = filter_date(message.channel, message.author.id, messages_to_delete);
                     await message.channel.send(questionDateTimeEmbed)
-                    .then(async () => {
-                        await message.channel.awaitMessages(filter, { max: 1 })
+                    .then(async input_date_message => {
+                        messages_to_delete.push(input_date_message);
+                        await message.channel.awaitMessages(date_filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
                         .then(async c2 => {
                             const date_time_str = c2.first().content;
                             const date_time = moment.tz(date_time_str, "YYYY-MM-DD HH:mm", true, "Europe/Berlin");
-                            if (!date_time.isValid()) {
-                                await message.channel.send('❌ Invalid date! Example of accepted format: \`2021-08-25 15:30\`');
-                                return;
-                            }
-                            const year_diff = date_time.year() - moment.tz("Europe/Berlin").year();
-                            if (year_diff < 0 || year_diff > 1) {
-                                await message.channel.send('❌ Year must be either the current year, or next year!');
-                                return;
-                            }
 
                             const global_cache = message.client.getCache('global');
                             const message_map = await global_cache.get(GLOBAL_MESSAGE_MAP);
@@ -1644,34 +1944,28 @@ ${templates.map((elt, idx) => `\`${idx + 1}.\` ${elt.title}`).join('\n')}
                             }
 
                             const questionChannelEmbed = new Discord.MessageEmbed().setTitle('Run channel').setDescription(questionChannel);
+                            const channel_filter = filter_channel(message, message.author.id, choice_channels, messages_to_delete);
                             await message.channel.send(questionChannelEmbed)
-                            .then(async () => {
-                                await message.channel.awaitMessages(filter, { max: 1 })
+                            .then(async choose_channel_message => {
+                                messages_to_delete.push(choose_channel_message);
+                                await message.channel.awaitMessages(channel_filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
                                 .then(async c3 => {
                                     const reply = c3.first().content.trim();
                                     let match;
                                     let channel_to;
                                     if (match = /<#(\d+)>/.exec(reply)) {
-                                        const channel_to_id = match[1];
-                                        channel_to = await message_get_channel_by_id(message, channel_to_id);
+                                        channel_to = await message_get_channel_by_id(message, match[1]);
                                     } else {
-                                        const channel_to_idx = parseInt(reply);
-                                        if (isNaN(channel_to_idx) || channel_to_idx <= 0 || channel_to_idx > choice_channels.length) {
-                                            await message.channel.send(`❌ Invalid choice! Please enter a number between 1 and ${choice_channels.length}, or enter a #channel`);
-                                            return;
-                                        }
-                                        channel_to = choice_channels[channel_to_idx - 1];
-                                    }
-                                    if (channel_to == null) {
-                                        await message.channel.send(`❌ Couldn't access channel ${reply}`);
-                                        return;
+                                        channel_to = choice_channels[parseInt(reply) - 1];
                                     }
 
                                     for (const c of choice_channels) {
                                         for (const msg_id of message_map[message.guild.id][c.id]) {
                                             const embed = get_embed(msg_id);
                                             if (embed.title === run_name) {
-                                                await message.channel.send(`❌ A run named '${run_name}' already exists!`);
+                                                set_user_free(message.author.id, message.guild.id, message.channel.id);
+                                                await message.channel.send(`❌ A run named '${run_name}' already exists! Please re-run the !run new command with a different name.`);
+                                                await bulkDelete(message.channel, messages_to_delete);
                                                 return;
                                             }
                                         }
@@ -1685,25 +1979,23 @@ ${templates.map((elt, idx) => `\`${idx + 1}.\` ${elt.title}`).join('\n')}
                                     questionRolePing += role_ping_choices;
 
                                     const questionRole = new Discord.MessageEmbed().setTitle('Mention').setDescription(questionRolePing);
+                                    const role_filter = filter_number(message.channel, message.author.id, 0, role_pings.length - 1, messages_to_delete);
                                     await message.channel.send(questionRole)
-                                    .then(async () => {
-                                        await message.channel.awaitMessages(filter, { max: 1 })
+                                    .then(async choose_role_ping_message => {
+                                        messages_to_delete.push(choose_role_ping_message);
+                                        await message.channel.awaitMessages(role_filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
                                         .then(async c4 => {
                                             const role_idx = parseInt(c4.first().content);
-                                            if (isNaN(role_idx) || role_idx < 0 || role_idx >= role_pings.length) {
-                                                await message.channel.send(`❌ Invalid choice! Please enter a number between 0 and ${role_pings.length - 1}`);
-                                                return;
-                                            }
                                             const role_ping = role_idx == 0 ? '' : role_pings[role_idx];
-                                            await message_create_new_run(message, guild_cache, run_name, date_time_str, templates[choice - 1], message.channel, channel_to, role_ping);
-                                        });
+                                            await message_create_new_run(message, guild_cache, run_name, date_time, template, message.channel, channel_to, role_ping, messages_to_delete);
+                                        }).catch(timeout_function(message.channel, message.author.id));
                                     });
-                                });
+                                }).catch(timeout_function(message.channel, message.author.id));
                             });
-                        });
+                        }).catch(timeout_function(message.channel, message.author.id));
                     });
-                });
-            });
+                }).catch(timeout_function(message.channel, message.author.id));
+            }).finally(() => set_user_free(message.author.id, message.guild.id, message.channel.id));
         } else if (args[0] === 'set-roster') {
             if (args[1] == null) {
                 await message.channel.send(`❌ No roster provided. Usage: \`${PREFIX}run roster MULTILINE ROSTER\``);
@@ -1717,7 +2009,7 @@ ${templates.map((elt, idx) => `\`${idx + 1}.\` ${elt.title}`).join('\n')}
                 await message.channel.send('❌ There\'s no run linked to this channel to set roster!');
             } else if (msg_id_embeds.length == 1) {
                 const msg_id_embed = msg_id_embeds[0];
-                await message_update_roster(message, msg_id_embed, roster);
+                await message_update_roster(message, msg_id_embed, roster, []);
             } else {
                 const questionRun =
 `📄 Please choose a run to apply this roster:
@@ -1726,21 +2018,17 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
 `;
                 const questionRunEmbed = new Discord.MessageEmbed().setTitle('Set roster').setDescription(questionRun);
 
-                const filter = m => m.author.id === message.author.id;
+                const messages_to_delete = [];
+                const filter = filter_number(message.channel, message.author.id, 1, msg_id_embeds.length, messages_to_delete);
                 await message.channel.send(questionRunEmbed)
                 .then(async choose_run_message => {
+                    messages_to_delete.push(choose_run_message);
                     await message.channel.awaitMessages(filter, { max: 1 })
                     .then(async replies => {
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
-                        if (isNaN(run_idx) || run_idx <= 0 || run_idx > msg_id_embeds.length) {
-                            await message.channel.send(`❌ Invalid choice! Please enter a number between 1 and ${msg_id_embeds.length}`);
-                            return;
-                        }
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
-                        await message_update_roster(message, msg_id_embed, roster);
-                        await reply.delete();
-                        await choose_run_message.delete();
+                        await message_update_roster(message, msg_id_embed, roster, messages_to_delete);
                     });
                 });
             }
@@ -1766,21 +2054,19 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
 ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n')}
 `;
                 const questionRunEmbed = new Discord.MessageEmbed().setTitle('Ping').setDescription(questionRun);
-                const filter = m => m.author.id === message.author.id;
+
+                const messages_to_delete = [];
+                const filter = filter_number(message.channel, message.author.id, 1, msg_id_embeds.length, messages_to_delete);
                 await message.channel.send(questionRunEmbed)
                 .then(async choose_run_message => {
+                    messages_to_delete.push(choose_run_message);
                     await message.channel.awaitMessages(filter, { max: 1 })
                     .then(async replies => {
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
-                        if (isNaN(run_idx) || run_idx <= 0 || run_idx > msg_id_embeds.length) {
-                            await message.channel.send(`❌ Invalid choice! Please enter a number between 1 and ${msg_id_embeds.length}`);
-                            return;
-                        }
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
                         await message_ping(message, msg_id_embed.embed, ping_message);
-                        await reply.delete();
-                        await choose_run_message.delete();
+                        await bulkDelete(message.channel, messages_to_delete);
                     });
                 });
             }
@@ -1807,21 +2093,18 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
 `;
                 const questionRunEmbed = new Discord.MessageEmbed().setTitle('Set date and time').setDescription(questionRun);
 
-                const filter = m => m.author.id === message.author.id;
+                const messages_to_delete = [];
+                const filter = filter_number(message.channel, message.author.id, 1, msg_id_embeds.length, messages_to_delete);
                 await message.channel.send(questionRunEmbed)
                 .then(async choose_run_message => {
+                    messages_to_delete.push(choose_run_message);
                     await message.channel.awaitMessages(filter, { max: 1 })
                     .then(async replies => {
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
-                        if (isNaN(run_idx) || run_idx <= 0 || run_idx > msg_id_embeds.length) {
-                            await message.channel.send(`❌ Invalid choice! Please enter a number between 1 and ${msg_id_embeds.length}`);
-                            return;
-                        }
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
                         await message_update_datetime(message, guild_cache, msg_id_embed, date_time);
-                        await reply.delete();
-                        await choose_run_message.delete();
+                        await bulkDelete(message.channel, messages_to_delete);
                     });
                 });
             }
@@ -1848,21 +2131,18 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
 `;
                 const questionRunEmbed = new Discord.MessageEmbed().setTitle('Set note').setDescription(questionRun);
 
-                const filter = m => m.author.id === message.author.id;
+                const messages_to_delete = [];
+                const filter = filter_number(message.channel, message.author.id, 1, msg_id_embeds.length, messages_to_delete);
                 await message.channel.send(questionRunEmbed)
                 .then(async choose_run_message => {
+                    messages_to_delete.push(choose_run_message);
                     await message.channel.awaitMessages(filter, { max: 1 })
                     .then(async replies => {
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
-                        if (isNaN(run_idx) || run_idx <= 0 || run_idx > msg_id_embeds.length) {
-                            await message.channel.send(`❌ Invalid choice! Please enter a number between 1 and ${msg_id_embeds.length}`);
-                            return;
-                        }
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
                         await message_update_note(message, msg_id_embed, note);
-                        await reply.delete();
-                        await choose_run_message.delete();
+                        await bulkDelete(message.channel, messages_to_delete);
                     });
                 });
             }
@@ -1912,21 +2192,18 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
 `;
                 const questionRunEmbed = new Discord.MessageEmbed().setTitle('Add reminder').setDescription(questionRun);
 
-                const filter = m => m.author.id === message.author.id;
+                const messages_to_delete = [];
+                const filter = filter_number(message.channel, message.author.id, 1, msg_id_embeds.length, messages_to_delete);
                 await message.channel.send(questionRunEmbed)
                 .then(async choose_run_message => {
+                    messages_to_delete.push(choose_run_message);
                     await message.channel.awaitMessages(filter, { max: 1 })
                     .then(async replies => {
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
-                        if (isNaN(run_idx) || run_idx <= 0 || run_idx > msg_id_embeds.length) {
-                            await message.channel.send(`❌ Invalid choice! Please enter a number between 1 and ${msg_id_embeds.length}`);
-                            return;
-                        }
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
                         await message_add_reminder(message, msg_id_embed, reminder_minutes);
-                        await reply.delete();
-                        await choose_run_message.delete();
+                        await bulkDelete(message.channel, messages_to_delete);
                     });
                 });
             }
@@ -1948,21 +2225,18 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
 `;
                 const questionRunEmbed = new Discord.MessageEmbed().setTitle('End').setDescription(questionRun);
 
-                const filter = m => m.author.id === message.author.id;
+                const messages_to_delete = [];
+                const filter = filter_number(message.channel, message.author.id, 1, msg_id_embeds.length, messages_to_delete);
                 await message.channel.send(questionRunEmbed)
                 .then(async choose_run_message => {
+                    messages_to_delete.push(choose_run_message);
                     await message.channel.awaitMessages(filter, { max: 1 })
                     .then(async replies => {
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
-                        if (isNaN(run_idx) || run_idx <= 0 || run_idx > msg_id_embeds.length) {
-                            await message.channel.send(`❌ Invalid choice! Please enter a number between 1 and ${msg_id_embeds.length}`);
-                            return;
-                        }
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
                         await message_end_run(message, guild_cache, msg_id_embed);
-                        await reply.delete();
-                        await choose_run_message.delete();
+                        await bulkDelete(message.channel, messages_to_delete);
                     });
                 });
             }
@@ -1982,21 +2256,18 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
 `;
                 const questionRunEmbed = new Discord.MessageEmbed().setTitle('Clear reminders').setDescription(questionRun);
 
-                const filter = m => m.author.id === message.author.id;
+                const messages_to_delete = [];
+                const filter = filter_number(message.channel, message.author.id, 1, msg_id_embeds.length, messages_to_delete);
                 await message.channel.send(questionRunEmbed)
                 .then(async choose_run_message => {
+                    messages_to_delete.push(choose_run_message);
                     await message.channel.awaitMessages(filter, { max: 1 })
                     .then(async replies => {
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
-                        if (isNaN(run_idx) || run_idx <= 0 || run_idx > msg_id_embeds.length) {
-                            await message.channel.send(`❌ Invalid choice! Please enter a number between 1 and ${msg_id_embeds.length}`);
-                            return;
-                        }
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
                         await message_clear_reminders(message, msg_id_embed);
-                        await reply.delete();
-                        await choose_run_message.delete();
+                        await bulkDelete(message.channel, messages_to_delete);
                     });
                 });
             }
@@ -2014,7 +2285,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send('❌ There\'s no run linked to this channel to add player!');
             } else if (msg_id_embeds.length == 1) {
                 const msg_id_embed = msg_id_embeds[0];
-                await message_add_player(message, msg_id_embed, player_user_id);
+                await message_add_player(message, msg_id_embed, player_user_id, []);
             } else {
                 const questionRun =
 `📄 Please choose a run to add this player:
@@ -2023,21 +2294,17 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
 `;
                 const questionRunEmbed = new Discord.MessageEmbed().setTitle('Add player').setDescription(questionRun);
 
-                const filter = m => m.author.id === message.author.id;
+                const messages_to_delete = [];
+                const filter = filter_number(message.channel, message.author.id, 1, msg_id_embeds.length, messages_to_delete);
                 await message.channel.send(questionRunEmbed)
                 .then(async choose_run_message => {
+                    messages_to_delete.push(choose_run_message);
                     await message.channel.awaitMessages(filter, { max: 1 })
                     .then(async replies => {
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
-                        if (isNaN(run_idx) || run_idx <= 0 || run_idx > msg_id_embeds.length) {
-                            await message.channel.send(`❌ Invalid choice! Please enter a number between 1 and ${msg_id_embeds.length}`);
-                            return;
-                        }
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
-                        await message_add_player(message, msg_id_embed, player_user_id);
-                        await reply.delete();
-                        await choose_run_message.delete();
+                        await message_add_player(message, msg_id_embed, player_user_id, messages_to_delete);
                     });
                 });
             }
@@ -2064,21 +2331,18 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
 `;
                 const questionRunEmbed = new Discord.MessageEmbed().setTitle('Remove player').setDescription(questionRun);
 
-                const filter = m => m.author.id === message.author.id;
+                const messages_to_delete = [];
+                const filter = filter_number(message.channel, message.author.id, 1, msg_id_embeds.length, messages_to_delete);
                 await message.channel.send(questionRunEmbed)
                 .then(async choose_run_message => {
+                    messages_to_delete.push(choose_run_message);
                     await message.channel.awaitMessages(filter, { max: 1 })
                     .then(async replies => {
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
-                        if (isNaN(run_idx) || run_idx <= 0 || run_idx > msg_id_embeds.length) {
-                            await message.channel.send(`❌ Invalid choice! Please enter a number between 1 and ${msg_id_embeds.length}`);
-                            return;
-                        }
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
                         await message_remove_player(message, msg_id_embed, player_user_id);
-                        await reply.delete();
-                        await choose_run_message.delete();
+                        await bulkDelete(message.channel, messages_to_delete);
                     });
                 });
             }
@@ -2090,7 +2354,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send('❌ There\'s no run linked to this channel to display date and time!');
             } else if (msg_id_embeds.length == 1) {
                 const msg_id_embed = msg_id_embeds[0];
-                await show_when(msg_id_embed.message_id, message.author.id, message.channel, true);
+                await show_when(msg_id_embed.message_id, message.author.id, message.channel, true, []);
             } else {
                 const questionRun =
 `📄 Please choose a run to display date and time:
@@ -2099,21 +2363,17 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
 `;
                 const questionRunEmbed = new Discord.MessageEmbed().setTitle('When').setDescription(questionRun);
 
-                const filter = m => m.author.id === message.author.id;
+                const messages_to_delete = [];
+                const filter = filter_number(message.channel, message.author.id, 1, msg_id_embeds.length, messages_to_delete);
                 await message.channel.send(questionRunEmbed)
                 .then(async choose_run_message => {
+                    messages_to_delete.push(choose_run_message);
                     await message.channel.awaitMessages(filter, { max: 1 })
                     .then(async replies => {
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
-                        if (isNaN(run_idx) || run_idx <= 0 || run_idx > msg_id_embeds.length) {
-                            await message.channel.send(`❌ Invalid choice! Please enter a number between 1 and ${msg_id_embeds.length}`);
-                            return;
-                        }
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
-                        await show_when(msg_id_embed.message_id, message.author.id, message.channel, true);
-                        await reply.delete();
-                        await choose_run_message.delete();
+                        await show_when(msg_id_embed.message_id, message.author.id, message.channel, true, messages_to_delete);
                     });
                 });
             }
@@ -2155,7 +2415,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send('❌ There\'s no run linked to this channel to set player char name!');
             } else if (msg_id_embeds.length == 1) {
                 const msg_id_embed = msg_id_embeds[0];
-                await update_char_name_to_roster_by_message_id(message.client, msg_id_embed.message_id, player_user_id, message.channel, message.author);
+                await update_char_name_to_roster_by_message_id(message.client, msg_id_embed.message_id, player_user_id, message.channel, message.author, []);
             } else {
                 const questionRun =
 `📄 Please choose a run to set this player's char name:
@@ -2164,21 +2424,17 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
 `;
                 const questionRunEmbed = new Discord.MessageEmbed().setTitle('Add player').setDescription(questionRun);
 
-                const filter = m => m.author.id === message.author.id;
+                const messages_to_delete = [];
+                const filter = filter_number(message.channel, message.author.id, 1, msg_id_embeds.length, messages_to_delete);
                 await message.channel.send(questionRunEmbed)
                 .then(async choose_run_message => {
+                    messages_to_delete.push(choose_run_message);
                     await message.channel.awaitMessages(filter, { max: 1 })
                     .then(async replies => {
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
-                        if (isNaN(run_idx) || run_idx <= 0 || run_idx > msg_id_embeds.length) {
-                            await message.channel.send(`❌ Invalid choice! Please enter a number between 1 and ${msg_id_embeds.length}`);
-                            return;
-                        }
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
-                        await update_char_name_to_roster_by_message_id(message.client, msg_id_embed.message_id, player_user_id, message.channel, message.author);
-                        await reply.delete();
-                        await choose_run_message.delete();
+                        await update_char_name_to_roster_by_message_id(message.client, msg_id_embed.message_id, player_user_id, message.channel, message.author, messages_to_delete);
                     });
                 });
             }
@@ -2302,7 +2558,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 emoji = match[1];
             }
             if (emoji == null) {
-                await message.channel.send(`❌ Role doesn't start with an emoji! Usage \`${PREFIX}run change-role [@user] <emoji and text>\``);
+                await message.channel.send(`❌ Role doesn't start with an emoji! Usage \`${PREFIX}run change-role [@user] <emoji and name>\``);
                 return;
             }
 
@@ -2313,30 +2569,65 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send('❌ There\'s no run linked to this channel to change player role!');
             } else if (msg_id_embeds.length == 1) {
                 const msg_id_embed = msg_id_embeds[0];
-                await message_change_role(message, msg_id_embed, player_user_id, role);
+                await message_change_role(message, msg_id_embed, player_user_id, role, []);
             } else {
                 const questionRun =
-`📄 Please choose a run to remove this player:
+`📄 Please choose a run to change player role:
 
 ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n')}
 `;
                 const questionRunEmbed = new Discord.MessageEmbed().setTitle('Change player role').setDescription(questionRun);
 
-                const filter = m => m.author.id === message.author.id;
+                const messages_to_delete = [];
+                const filter = filter_number(message.channel, message.author.id, 1, msg_id_embeds.length, messages_to_delete);
                 await message.channel.send(questionRunEmbed)
                 .then(async choose_run_message => {
+                    messages_to_delete.push(choose_run_message);
                     await message.channel.awaitMessages(filter, { max: 1 })
                     .then(async replies => {
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
-                        if (isNaN(run_idx) || run_idx <= 0 || run_idx > msg_id_embeds.length) {
-                            await message.channel.send(`❌ Invalid choice! Please enter a number between 1 and ${msg_id_embeds.length}`);
-                            return;
-                        }
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
-                        await message_change_role(message, msg_id_embed, player_user_id, role);
-                        await reply.delete();
-                        await choose_run_message.delete();
+                        await message_change_role(message, msg_id_embed, player_user_id, role, messages_to_delete);
+                    });
+                });
+            }
+        } else if (args[0] === 'swap') {
+            let match;
+            if ((match = /^<@[!]?(\d+)>\s+<@[!]?(\d+)>$/.exec(args[1])) == null) {
+                await message.channel.send(`❌ Usage \`${PREFIX}run swap @user1 @user2\``);
+                return;
+            }
+            const user_id_1 = match[1];
+            const user_id_2 = match[2];
+
+            // Get the list of runs that is linked to channel
+            const msg_id_embeds = get_embeds_linked_to_channel(message.channel.id);
+
+            if (msg_id_embeds.length == 0) {
+                await message.channel.send('❌ There\'s no run linked to this channel to swap players!');
+            } else if (msg_id_embeds.length == 1) {
+                const msg_id_embed = msg_id_embeds[0];
+                await message_swap_players(message, msg_id_embed, user_id_1, user_id_2, []);
+            } else {
+                const questionRun =
+`📄 Please choose a run to swap players:
+
+${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n')}
+`;
+                const questionRunEmbed = new Discord.MessageEmbed().setTitle('Swap players').setDescription(questionRun);
+
+                const messages_to_delete = [];
+                const filter = filter_number(message.channel, message.author.id, 1, msg_id_embeds.length, messages_to_delete);
+                await message.channel.send(questionRunEmbed)
+                .then(async choose_run_message => {
+                    messages_to_delete.push(choose_run_message);
+                    await message.channel.awaitMessages(filter, { max: 1 })
+                    .then(async replies => {
+                        const reply = replies.first();
+                        const run_idx = parseInt(reply.content.trim());
+                        const msg_id_embed = msg_id_embeds[run_idx - 1];
+                        await message_swap_players(message, msg_id_embed, user_id_1, user_id_2, messages_to_delete);
                     });
                 });
             }

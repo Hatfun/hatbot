@@ -218,7 +218,7 @@ client.on('message', async message => {
     const args = match2 === null ? [firstSplit[1].trim()] : [firstSplit[1].slice(0, match2.index).trim(), firstSplit[1].slice(match2.index + 1).trim()];
     const noprefix_command = command.slice(1);
     if (!client.commands.has(noprefix_command)) return;
-    logger.info(`${command} ${JSON.stringify(args)}`);
+    logger.info(`${message.author.id} ${command} ${JSON.stringify(args)}`);
     try {
         await client.commands.get(noprefix_command).execute(message, args);
     } catch (error) {
