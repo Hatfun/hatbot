@@ -1150,23 +1150,25 @@ async function message_remove_player(message, msg_id_embed, player_user_id) {
 }
 
 async function reset_reactions(run_msg, embed) {
-    const roles = embed_get_distinct_roles(embed);
+    const roles = Array.from(embed_get_distinct_roles(embed));
     await run_msg.reactions.removeAll();
-    for (let emoji of roles) {
-        try {
-            await run_msg.react(emoji);
-        } catch (exception) {
-            // Message can't be found, might as well exit now
-            if (exception.code === 10008) {
-                logger.warn('Can\'t react on deleted message');
+    try {
+        for (let emoji of roles.concat(['🕒', '📝', '❌'])) {
+            // Abort if roles changed in the middle of reset_reactions
+            const roles_now = Array.from(embed_get_distinct_roles(embed));
+            if (JSON.stringify(roles) != JSON.stringify(roles_now)) {
                 return;
             }
-            logger.error(exception.stack);
+            await run_msg.react(emoji);
         }
+    } catch (exception) {
+        // Message can't be found, might as well exit now
+        if (exception.code === 10008) {
+            logger.warn('Can\'t react on deleted message');
+            return;
+        }
+        logger.error(exception.stack);
     }
-    await run_msg.react('🕒');
-    await run_msg.react('📝');
-    await run_msg.react('❌');
 }
 
 async function bulkDelete(channel, messages_to_delete) {
@@ -1200,9 +1202,8 @@ async function message_change_role(message, msg_id_embed, player_user_id, new_ro
             if (embed_change_role_for_user_and_role(embed, player_user_id, user_roles[0].role, new_role)) {
                 await run_msg.edit(embed);
                 message.channel.send(`✅ **${embed.title}**: <@${player_user_id}>'s role ${clean_role(user_roles[0].role)} has been changed to ${clean_role(new_role)}!`);
-
-                await reset_reactions(run_msg, embed);
                 await bulkDelete(message.channel, messages_to_delete);
+                await reset_reactions(run_msg, embed);
             } else {
                 await message.channel.send(`❌ **${embed.title}**: Failed to change role!`);
                 await bulkDelete(message.channel, messages_to_delete);
