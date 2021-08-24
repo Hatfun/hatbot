@@ -1017,7 +1017,9 @@ async function message_create_new_run(message, guild_cache, name, date_time, tem
 async function message_update_roster(message, msg_id_embed, roster, messages_to_delete) {
     if (roster != null) {
         const embed = msg_id_embed.embed;
+        const distinct_roles_before = Array.from(embed_get_distinct_roles(embed));
         embed_update_roster(embed, roster);
+        const distinct_roles_after = Array.from(embed_get_distinct_roles(embed));
         embed_update_number_of_players(embed);
         const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
         embed_update_time_from_now(embed);
@@ -1026,7 +1028,9 @@ async function message_update_roster(message, msg_id_embed, roster, messages_to_
         // Confirmation before working with reactions
         await message.channel.send(`✅ **${embed.title}** Roster updated!`);
         await bulkDelete(message.channel, messages_to_delete);
-        await reset_reactions(run_msg, embed);
+        if (JSON.stringify(distinct_roles_before) != JSON.stringify(distinct_roles_after)) {
+            await reset_reactions(run_msg, embed);
+        }
     }
 }
 
@@ -1194,16 +1198,20 @@ async function message_change_role(message, msg_id_embed, player_user_id, new_ro
         const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
 
         const distinct_user_roles = distinct_roles(user_roles);
+        const distinct_roles_before = Array.from(embed_get_distinct_roles(embed));
 
         if (distinct_user_roles.length == 0) {
             await message.channel.send(`❌ **${embed.title}**: Cannot find any role for <@${player_user_id}>!`);
             await bulkDelete(message.channel, messages_to_delete);
         } else if (distinct_user_roles.length == 1) {
             if (embed_change_role_for_user_and_role(embed, player_user_id, user_roles[0].role, new_role)) {
+                const distinct_roles_after = Array.from(embed_get_distinct_roles(embed));
                 await run_msg.edit(embed);
                 message.channel.send(`✅ **${embed.title}**: <@${player_user_id}>'s role ${clean_role(user_roles[0].role)} has been changed to ${clean_role(new_role)}!`);
                 await bulkDelete(message.channel, messages_to_delete);
-                await reset_reactions(run_msg, embed);
+                if (JSON.stringify(distinct_roles_before) != JSON.stringify(distinct_roles_after)) {
+                    await reset_reactions(run_msg, embed);
+                }
             } else {
                 await message.channel.send(`❌ **${embed.title}**: Failed to change role!`);
                 await bulkDelete(message.channel, messages_to_delete);
@@ -1227,10 +1235,13 @@ ${distinct_user_roles.map((elt, idx) => `\`${idx + 1}.\`    ${elt.emoji}`).join(
                     const user_role = distinct_user_roles[user_role_idx - 1];
 
                     if (embed_change_role_for_user_and_role(embed, player_user_id, user_role.role, new_role)) {
+                        const distinct_roles_after = Array.from(embed_get_distinct_roles(embed));
                         await run_msg.edit(embed);
                         await message.channel.send(`✅ **${embed.title}**: <@${player_user_id}>'s role ${clean_role(user_role.role)} has been changed to ${clean_role(new_role)}!`);
                         await bulkDelete(message.channel, messages_to_delete);
-                        await reset_reactions(run_msg, embed);
+                        if (JSON.stringify(distinct_roles_before) != JSON.stringify(distinct_roles_after)) {
+                            await reset_reactions(run_msg, embed);
+                        }
                     } else {
                         await message.channel.send(`❌ **${embed.title}**: Failed to change role!`);
                         await bulkDelete(message.channel, messages_to_delete);
