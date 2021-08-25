@@ -99,6 +99,12 @@ class MyDiscordCache {
         }
         return this.message_cache.get(message_id).message;
     }
+
+    async deleteMessageFromCache(message_id) {
+        if (this.message_cache.delete(message_id)) {
+            logger.info(`Message ${message_id} has been deleted. Removed from cache.`);
+        }
+    }
 }
 
 const client = new Discord.Client({
@@ -232,6 +238,19 @@ client.on('messageReactionAdd', async (reaction, user) => {
         if (command.onReaction != null) {
             try {
                 await command.onReaction(reaction, user);
+            } catch (exception) {
+                logger.error(exception.stack);
+            }
+        }
+    }
+});
+
+client.on('messageDelete', async message => {
+    client.discord_cache.deleteMessageFromCache(message.id);
+    for (const [command_name, command] of client.commands) {
+        if (command.onMessageDelete != null) {
+            try {
+                await command.onMessageDelete(message);
             } catch (exception) {
                 logger.error(exception.stack);
             }

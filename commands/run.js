@@ -13,6 +13,7 @@ const ROLE_MENTIONS = 'run_role_mentions';
 const BOARDS = 'run_boards';
 
 const global_embeds = new Discord.Collection();
+let global_message_map = {};
 const user_busy = new Set();
 
 const TIMEOUT_MS = 120000;
@@ -758,20 +759,16 @@ async function process_reactions(client, run_message) {
 
 async function delete_run_from_cache(client, message_id) {
     const global_cache = client.getCache('global');
-    const message_map = await global_cache.get(GLOBAL_MESSAGE_MAP);
-    if (message_map == null) {
-        return;
-    }
 
     const messages_to_cleanup = [];
-    for (const guild_id in message_map) {
-        for (const channel_id in message_map[guild_id]) {
-            if (message_map[guild_id][channel_id].includes(message_id)) {
+    for (const guild_id in global_message_map) {
+        for (const channel_id in global_message_map[guild_id]) {
+            if (global_message_map[guild_id][channel_id].includes(message_id)) {
                 logger.info(`delete_run_from_cache: Deleting message ${message_id} from cache`);
-                const message_id_idx = message_map[guild_id][channel_id].indexOf(message_id);
-                message_map[guild_id][channel_id].splice(message_id_idx, 1);
+                const message_id_idx = global_message_map[guild_id][channel_id].indexOf(message_id);
+                global_message_map[guild_id][channel_id].splice(message_id_idx, 1);
                 global_embeds.delete(message_id);
-                await global_cache.set(GLOBAL_MESSAGE_MAP, message_map);
+                await global_cache.set(GLOBAL_MESSAGE_MAP, global_message_map);
                 return true;
             }
         }
@@ -822,18 +819,14 @@ This is an automated reminder that **${embed.title}** will happen on **${when}**
 
 async function update_all_runs(client) {
     const global_cache = client.getCache('global');
-    const message_map = await global_cache.get(GLOBAL_MESSAGE_MAP);
-    if (message_map == null) {
-        return;
-    }
 
     const messages_to_cleanup = [];
-    for (const guild_id in message_map) {
+    for (const guild_id in global_message_map) {
         const guild = await client.discord_cache.getGuild(guild_id);
-        for (const channel_id in message_map[guild_id]) {
+        for (const channel_id in global_message_map[guild_id]) {
             const channel = await client.discord_cache.getChannel(channel_id);
-            for (let message_id_idx in message_map[guild_id][channel_id]) {
-                const message_id = message_map[guild_id][channel_id][message_id_idx];
+            for (let message_id_idx in global_message_map[guild_id][channel_id]) {
+                const message_id = global_message_map[guild_id][channel_id][message_id_idx];
                 try {
                     const run_message = await client.discord_cache.getMessage(channel_id, message_id);
                     const embed = get_embed(run_message.id);
@@ -868,23 +861,18 @@ async function update_all_runs(client) {
 
     if (messages_to_cleanup.length > 0) {
         for (const m of messages_to_cleanup) {
-            const message_id_idx = message_map[m.guild_id][m.channel_id].indexOf(m.message_id);
-            message_map[m.guild_id][m.channel_id].splice(message_id_idx, 1);
+            const message_id_idx = global_message_map[m.guild_id][m.channel_id].indexOf(m.message_id);
+            global_message_map[m.guild_id][m.channel_id].splice(message_id_idx, 1);
             global_embeds.delete(m.message_id);
         }
-        await global_cache.set(GLOBAL_MESSAGE_MAP, message_map);
+        await global_cache.set(GLOBAL_MESSAGE_MAP, global_message_map);
     }
 }
 
-async function get_message_by_id_from_global_cache(client, message_id) {
-    const global_cache = client.getCache('global');
-    const message_map = await global_cache.get(GLOBAL_MESSAGE_MAP);
-    if (message_map == null) {
-        return null;
-    }
-    for (const guild_id in message_map) {
-        for (const channel_id in message_map[guild_id]) {
-            if (message_map[guild_id][channel_id].includes(message_id)) {
+async function get_message_by_id_from_global_map(client, message_id) {
+    for (const guild_id in global_message_map) {
+        for (const channel_id in global_message_map[guild_id]) {
+            if (global_message_map[guild_id][channel_id].includes(message_id)) {
                 const channel = await client.discord_cache.getChannel(channel_id);
                 const message = await client.discord_cache.getMessage(channel_id, message_id);
 
@@ -971,20 +959,16 @@ async function message_get_template_list(message, guild_cache) {
 
 async function message_add_message_to_global_cache(message, run_message, embed) {
     const global_cache = message.client.getCache('global');
-    let message_map = await global_cache.get(GLOBAL_MESSAGE_MAP);
-    if (message_map == null) {
-        message_map = {};
+    if (!(message.guild.id in global_message_map)) {
+        global_message_map[message.guild.id] = {};
     }
-    if (!(message.guild.id in message_map)) {
-        message_map[message.guild.id] = {};
+    if (!(run_message.channel.id in global_message_map[message.guild.id])) {
+        global_message_map[message.guild.id][run_message.channel.id] = [];
     }
-    if (!(run_message.channel.id in message_map[message.guild.id])) {
-        message_map[message.guild.id][run_message.channel.id] = [];
+    if (!global_message_map[message.guild.id][run_message.channel.id].includes(run_message.id)) {
+        global_message_map[message.guild.id][run_message.channel.id].push(run_message.id);
     }
-    if (!message_map[message.guild.id][run_message.channel.id].includes(run_message.id)) {
-        message_map[message.guild.id][run_message.channel.id].push(run_message.id);
-    }
-    await global_cache.set(GLOBAL_MESSAGE_MAP, message_map);
+    await global_cache.set(GLOBAL_MESSAGE_MAP, global_message_map);
     // In-memory global embeds
     global_embeds.set(run_message.id, embed);
 }
@@ -1021,7 +1005,7 @@ async function message_update_roster(message, msg_id_embed, roster, messages_to_
         embed_update_roster(embed, roster);
         const distinct_roles_after = Array.from(embed_get_distinct_roles(embed));
         embed_update_number_of_players(embed);
-        const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
+        const run_msg = await get_message_by_id_from_global_map(message.client, msg_id_embed.message_id);
         embed_update_time_from_now(embed);
         await run_msg.edit(embed);
 
@@ -1038,7 +1022,7 @@ async function message_update_datetime(message, guild_cache, msg_id_embed, date_
     if (date_time != null) {
         const embed = msg_id_embed.embed;
         embed_update_date_time(embed, date_time);
-        const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
+        const run_msg = await get_message_by_id_from_global_map(message.client, msg_id_embed.message_id);
         await run_msg.edit(embed);
 
         const channel_from = await get_embed_channel_from(message.client, embed);
@@ -1052,7 +1036,7 @@ async function message_update_note(message, msg_id_embed, note) {
         note = '\u200B';
     const embed = msg_id_embed.embed;
     embed_update_note(embed, note);
-    const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
+    const run_msg = await get_message_by_id_from_global_map(message.client, msg_id_embed.message_id);
     embed_update_time_from_now(embed);
     await run_msg.edit(embed);
 
@@ -1063,7 +1047,7 @@ async function message_update_note(message, msg_id_embed, note) {
 async function message_add_reminder(message, msg_id_embed, reminder_minutes) {
     const embed = msg_id_embed.embed;
     embed_add_reminder(embed, reminder_minutes);
-    const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
+    const run_msg = await get_message_by_id_from_global_map(message.client, msg_id_embed.message_id);
     embed_update_time_from_now(embed);
     await run_msg.edit(embed);
 
@@ -1074,7 +1058,7 @@ async function message_clear_reminders(message, msg_id_embed) {
     const embed = msg_id_embed.embed;
 
     embed_clear_reminder(embed);
-    const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
+    const run_msg = await get_message_by_id_from_global_map(message.client, msg_id_embed.message_id);
     embed_update_time_from_now(embed);
     await run_msg.edit(embed);
 
@@ -1098,7 +1082,7 @@ ${ping_message}`;
 
 async function message_end_run(message, guild_cache, msg_id_embed) {
     const embed = msg_id_embed.embed;
-    const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
+    const run_msg = await get_message_by_id_from_global_map(message.client, msg_id_embed.message_id);
     const channel_to_id = run_msg.channel.id;
     await run_msg.delete();
 
@@ -1138,7 +1122,7 @@ ${emojis.map((elt, idx) => `\`${idx + 1}.\`    ${elt}`).join('\n')}
                 const emoji_idx = parseInt(reply.content.trim());
                 const emoji_name = emojis[emoji_idx - 1];
 
-                const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
+                const run_msg = await get_message_by_id_from_global_map(message.client, msg_id_embed.message_id);
                 await update_user_to_roster(message.client, run_msg, player_user_id, emoji_name);
                 await bulkDelete(message.channel, messages_to_delete);
             });
@@ -1148,7 +1132,7 @@ ${emojis.map((elt, idx) => `\`${idx + 1}.\`    ${elt}`).join('\n')}
 
 async function message_remove_player(message, msg_id_embed, player_user_id) {
     if (player_user_id != null) {
-        const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
+        const run_msg = await get_message_by_id_from_global_map(message.client, msg_id_embed.message_id);
         await remove_user_from_roster(message.client, run_msg, player_user_id, '❌');
     }
 }
@@ -1195,7 +1179,7 @@ async function message_change_role(message, msg_id_embed, player_user_id, new_ro
     if (player_user_id != null) {
         const embed = msg_id_embed.embed;
         const user_roles = embed_get_roles_for_user(embed, player_user_id);
-        const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
+        const run_msg = await get_message_by_id_from_global_map(message.client, msg_id_embed.message_id);
 
         const distinct_user_roles = distinct_roles(user_roles);
         const distinct_roles_before = Array.from(embed_get_distinct_roles(embed));
@@ -1254,7 +1238,7 @@ ${distinct_user_roles.map((elt, idx) => `\`${idx + 1}.\`    ${elt.emoji}`).join(
 
 async function message_swap_players(message, msg_id_embed, user_id_1, user_id_2, messages_to_delete) {
     const embed = msg_id_embed.embed;
-    const run_msg = await get_message_by_id_from_global_cache(message.client, msg_id_embed.message_id);
+    const run_msg = await get_message_by_id_from_global_map(message.client, msg_id_embed.message_id);
     const roles_1 = embed_get_roles_for_user(embed, user_id_1);
     const roles_2 = embed_get_roles_for_user(embed, user_id_2);
 
@@ -1341,9 +1325,8 @@ async function client_refresh_board(client, guild_cache, guild_id, channel_id) {
     }
 
     const runs = [];
-    const message_map = await global_cache.get(GLOBAL_MESSAGE_MAP);
-    if (message_map != null && guild_id in message_map && channel_id in message_map[guild_id]) {
-        const message_ids = message_map[guild_id][channel_id];
+    if (guild_id in global_message_map && channel_id in global_message_map[guild_id]) {
+        const message_ids = global_message_map[guild_id][channel_id];
 
         for (const message_id of message_ids) {
             const embed_from_message = get_embed(message_id);
@@ -1497,18 +1480,19 @@ module.exports = {
     description: 'Utilities for organizing runs',
     async setup(client) {
         const global_cache = client.getCache('global');
-        const message_map = await global_cache.get(GLOBAL_MESSAGE_MAP);
-        if (message_map == null) {
-            return;
+        global_message_map = await global_cache.get(GLOBAL_MESSAGE_MAP);
+        if (global_message_map == null) {
+            global_message_map = {};
+            await global_cache.set(GLOBAL_MESSAGE_MAP, global_message_map);
         }
 
         const messages_to_cleanup = [];
-        for (const guild_id in message_map) {
+        for (const guild_id in global_message_map) {
             const guild = await client.discord_cache.getGuild(guild_id);
-            for (const channel_id in message_map[guild_id]) {
+            for (const channel_id in global_message_map[guild_id]) {
                 const channel = await client.discord_cache.getChannel(channel_id);
-                for (let message_id_idx in message_map[guild_id][channel_id]) {
-                    const message_id = message_map[guild_id][channel_id][message_id_idx];
+                for (let message_id_idx in global_message_map[guild_id][channel_id]) {
+                    const message_id = global_message_map[guild_id][channel_id][message_id_idx];
                     try {
                         const run_message = await client.discord_cache.getMessage(channel_id, message_id);
                         global_embeds.set(run_message.id, run_message.embeds[0]);
@@ -1530,16 +1514,16 @@ module.exports = {
 
         if (messages_to_cleanup.length > 0) {
             for (const m of messages_to_cleanup) {
-                const message_id_idx = message_map[m.guild_id][m.channel_id].indexOf(m.message_id);
-                message_map[m.guild_id][m.channel_id].splice(message_id_idx, 1);
+                const message_id_idx = global_message_map[m.guild_id][m.channel_id].indexOf(m.message_id);
+                global_message_map[m.guild_id][m.channel_id].splice(message_id_idx, 1);
             }
-            await global_cache.set(GLOBAL_MESSAGE_MAP, message_map);
+            await global_cache.set(GLOBAL_MESSAGE_MAP, global_message_map);
         }
 
         // refresh board after global_embed is set
-        for (const guild_id in message_map) {
+        for (const guild_id in global_message_map) {
             const guild_cache = client.getCache(guild_id);
-            for (const channel_id in message_map[guild_id]) {
+            for (const channel_id in global_message_map[guild_id]) {
                 await client_refresh_board(client, guild_cache, guild_id, channel_id);
             }
         }
@@ -1556,6 +1540,20 @@ module.exports = {
             logger.info(`onReaction: ${user.id} reacted ${reaction.emoji.toString()} on msg ${reaction.message.id}`);
 
             await process_reaction(reaction, user);
+        }
+    },
+    async onMessageDelete(message) {
+        for (const guild_id in global_message_map) {
+            for (const channel_id in global_message_map[guild_id]) {
+                const message_id_idx = global_message_map[guild_id][channel_id].indexOf(message.id);
+                if (message_id_idx >= 0) {
+                    logger.info(`onMessageDelete: Deleting message ${message.id} from global_message_map[${guild_id}][${channel_id}] and global_embeds`);
+                    global_message_map[guild_id][channel_id].splice(message_id_idx, 1);
+                    global_embeds.delete(message.id);
+
+                    await client_refresh_board(message.client, message.client.getCache(guild_id), guild_id, channel_id);
+                }
+            }
         }
     },
     async execute(message, args) {
@@ -1939,10 +1937,9 @@ ${templates.map((elt, idx) => `\`${idx + 1}.\` ${elt.title}`).join('\n')}
                             const date_time = moment.tz(date_time_str, "YYYY-MM-DD HH:mm", true, "Europe/Berlin");
 
                             const global_cache = message.client.getCache('global');
-                            const message_map = await global_cache.get(GLOBAL_MESSAGE_MAP);
                             const choice_channels = [];
-                            if (message_map != null && message.guild.id in message_map) {
-                                const channel_ids = Object.keys(message_map[message.guild.id]);
+                            if (message.guild.id in global_message_map) {
+                                const channel_ids = Object.keys(global_message_map[message.guild.id]);
                                 for (const ch_id of channel_ids) {
                                     const c = await message_get_channel_by_id(message, ch_id);
                                     choice_channels.push(c);
@@ -1972,7 +1969,7 @@ ${templates.map((elt, idx) => `\`${idx + 1}.\` ${elt.title}`).join('\n')}
                                     }
 
                                     for (const c of choice_channels) {
-                                        for (const msg_id of message_map[message.guild.id][c.id]) {
+                                        for (const msg_id of global_message_map[message.guild.id][c.id]) {
                                             const embed = get_embed(msg_id);
                                             if (embed.title === run_name) {
                                                 set_user_free(message.author.id, message.guild.id, message.channel.id);
@@ -2398,18 +2395,17 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
             const channel_id = match[1];
 
             const global_cache = message.client.getCache('global');
-            const message_map = await global_cache.get(GLOBAL_MESSAGE_MAP);
             const choice_channels = [];
 
             const guild_id = message.guild.id;
 
-            if (message_map != null && guild_id in message_map && channel_id in message_map[guild_id]) {
-                if (message_map[guild_id][channel_id].length > 0) {
+            if (guild_id in global_message_map && channel_id in global_message_map[guild_id]) {
+                if (global_message_map[guild_id][channel_id].length > 0) {
                     await message.channel.send(`❌ The channel <#${channel_id}> still have some ongoing runs! Cannot forget!`);
                     return;
                 } else {
-                    delete message_map[guild_id][channel_id];
-                    await global_cache.set(GLOBAL_MESSAGE_MAP, message_map);
+                    delete global_message_map[guild_id][channel_id];
+                    await global_cache.set(GLOBAL_MESSAGE_MAP, global_message_map);
                 }
             }
             await message.channel.send(`✅ The channel <#${channel_id}> will no longer be used for channel choices`);
@@ -2478,9 +2474,8 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
             }
 
             const runs = [];
-            const message_map = await global_cache.get(GLOBAL_MESSAGE_MAP);
-            if (message_map != null && message.guild.id in message_map && channel_id in message_map[message.guild.id]) {
-                const message_ids = message_map[message.guild.id][channel_id];
+            if (message.guild.id in global_message_map && channel_id in global_message_map[message.guild.id]) {
+                const message_ids = global_message_map[message.guild.id][channel_id];
 
                 for (const message_id of message_ids) {
                     const embed_from_message = get_embed(message_id);
