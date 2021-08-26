@@ -11,6 +11,7 @@ const CHANNEL_RUN_ARCHIVES = 'run_archives_channel';
 const CHANNEL_RUN_BOARD = 'run_board_channel';
 const ROLE_MENTIONS = 'run_role_mentions';
 const BOARDS = 'run_boards';
+const COLORS = ['#E1D733', '#0043E7', '#C403FD', '#FF16BF', '#FFB517', '#1EEBD8', '#AEBDBC', '#ECECEC', '#A6EFFF', '#269E69'];
 
 const global_embeds = new Discord.Collection();
 let global_message_map = {};
@@ -50,6 +51,14 @@ const TIMEZONES = [
         { name: 'Sydney',       flag: ':flag_au:',  tz: 'Australia/Sydney' }
     ]}
 ];
+
+function hashCode(s) {
+    return s.split('').reduce((a,b) => (((a << 5) - a) + b.charCodeAt(0))|0, 0);
+}
+
+function color(s) {
+    return COLORS[hashCode(s) % COLORS.length];
+}
 
 function set_user_busy(user_id, guild_id, channel_id) {
     user_busy.add(`${user_id}|${guild_id}|${channel_id}`);
@@ -562,7 +571,7 @@ async function update_user_to_roster(client, msg, user_id, emoji_name) {
         embed_update_number_of_players(embed);
         embed_update_time_from_now(embed);
         msg.edit(embed);
-        await channel_from.send(`✅ **${embed.title}**: Added <@${user_id}> as ${added}!`);
+        await channel_from.send(`<:green_plus:880289659933053010> **${embed.title}**: Added <@${user_id}> as ${added}!`);
     } else {
         await channel_from.send(`❌ **${embed.title}**: Couldn't add <@${user_id}> to roster!`);
     }
@@ -577,7 +586,7 @@ async function remove_user_from_roster(client, msg, user_id, emoji_name) {
         embed_update_number_of_players(embed);
         embed_update_time_from_now(embed);
         msg.edit(embed);
-        await channel_from.send(`❌ **${embed.title}**: Removed <@${user_id}>!`);
+        await channel_from.send(`<:red_minus:880289746272792607> **${embed.title}**: Removed <@${user_id}>!`);
     }
 }
 
@@ -672,7 +681,7 @@ Please enter char name for **${clean_role(role.role)}**:`;
         if (channel.id != channel_from.id) {
             await channel.send(`✅ **${embed.title}**: Char name${s} updated!`);
         }
-        await channel_from.send(`✅ **${embed.title}**: Set char name${s} for <@${player_id}>:
+        await channel_from.send(`📝 **${embed.title}**: Set char name${s} for <@${player_id}>:
 ${added_char_names.join('\n')}`);
         if (messages_to_delete != null) {
             await bulkDelete(channel_from, messages_to_delete);
@@ -975,7 +984,7 @@ async function message_add_message_to_global_cache(message, run_message, embed) 
 
 async function message_create_new_run(message, guild_cache, name, date_time, template, channel_from, channel_to, role_ping, messages_to_delete) {
     const embed = new Discord.MessageEmbed()
-        .setColor('#0099ff')
+        .setColor(color(name))
         .setTitle(name)
         .setAuthor(message.author.username, message.author.displayAvatarURL({format: 'jpg'}))
         .setDescription((template.content.startsWith('\n') ? '\u200B' : '') + template.content + '\n\u200B')
@@ -1081,20 +1090,20 @@ ${ping_message}`;
 }
 
 async function message_end_run(message, guild_cache, msg_id_embed) {
-    const embed = msg_id_embed.embed;
+    // const embed = msg_id_embed.embed;
     const run_msg = await get_message_by_id_from_global_map(message.client, msg_id_embed.message_id);
-    const channel_to_id = run_msg.channel.id;
+    // const channel_to_id = run_msg.channel.id;
     await run_msg.delete();
 
-    const channel_archives = await client_get_channel(message.client, guild_cache, CHANNEL_RUN_ARCHIVES);
-    const channel_from = await get_embed_channel_from(message.client, embed);
-    embed.setColor("#009900");
-    embed.fields.splice(embed.fields.length - 1, 1);
-    await channel_archives.send(embed);
+    // const channel_archives = await client_get_channel(message.client, guild_cache, CHANNEL_RUN_ARCHIVES);
+    // const channel_from = await get_embed_channel_from(message.client, embed);
+    // embed.setColor("#000000");
+    // embed.fields.splice(embed.fields.length - 1, 1);
+    // await channel_archives.send(embed);
 
-    await delete_run_from_cache(message.client, msg_id_embed.message_id);
-    await client_refresh_board(message.client, guild_cache, message.guild.id, channel_to_id);
-    await channel_from.send(`✅ **${embed.title}** is over. Roster message has been archived!`);
+    // await delete_run_from_cache(message.client, msg_id_embed.message_id);
+    // await client_refresh_board(message.client, guild_cache, message.guild.id, channel_to_id);
+    // await channel_from.send(`✅ **${embed.title}** is over. Roster message has been archived!`);
 }
 
 async function message_add_player(message, msg_id_embed, player_user_id, messages_to_delete) {
@@ -1191,7 +1200,7 @@ async function message_change_role(message, msg_id_embed, player_user_id, new_ro
             if (embed_change_role_for_user_and_role(embed, player_user_id, user_roles[0].role, new_role)) {
                 const distinct_roles_after = Array.from(embed_get_distinct_roles(embed));
                 await run_msg.edit(embed);
-                message.channel.send(`✅ **${embed.title}**: <@${player_user_id}>'s role ${clean_role(user_roles[0].role)} has been changed to ${clean_role(new_role)}!`);
+                message.channel.send(`**${embed.title}**: <@${player_user_id}>'s role ${clean_role(user_roles[0].role)} has been changed to ${clean_role(new_role)}!`);
                 await bulkDelete(message.channel, messages_to_delete);
                 if (JSON.stringify(distinct_roles_before) != JSON.stringify(distinct_roles_after)) {
                     await reset_reactions(run_msg, embed);
@@ -1221,7 +1230,7 @@ ${distinct_user_roles.map((elt, idx) => `\`${idx + 1}.\`    ${elt.emoji}`).join(
                     if (embed_change_role_for_user_and_role(embed, player_user_id, user_role.role, new_role)) {
                         const distinct_roles_after = Array.from(embed_get_distinct_roles(embed));
                         await run_msg.edit(embed);
-                        await message.channel.send(`✅ **${embed.title}**: <@${player_user_id}>'s role ${clean_role(user_role.role)} has been changed to ${clean_role(new_role)}!`);
+                        await message.channel.send(`**${embed.title}**: <@${player_user_id}>'s role ${clean_role(user_role.role)} has been changed to ${clean_role(new_role)}!`);
                         await bulkDelete(message.channel, messages_to_delete);
                         if (JSON.stringify(distinct_roles_before) != JSON.stringify(distinct_roles_after)) {
                             await reset_reactions(run_msg, embed);
@@ -1293,7 +1302,7 @@ ${distinct_user_roles_2.map((elt, idx) => `\`${idx + 1}.\`    ${elt.emoji}`).joi
 
     embed_swap_roles(embed, user_id_1, role_1.role, user_id_2, role_2.role);
     await run_msg.edit(embed);
-    await message.channel.send(`✅ **${embed.title}**: [${role_1.emoji} <@${user_id_1}> and ${role_2.emoji} <@${user_id_2}>] swapped to [${role_1.emoji} <@${user_id_2}> and ${role_2.emoji} <@${user_id_1}>]`);
+    await message.channel.send(`**${embed.title}**: [${role_1.emoji} <@${user_id_1}> and ${role_2.emoji} <@${user_id_2}>] swapped to [${role_1.emoji} <@${user_id_2}> and ${role_2.emoji} <@${user_id_1}>]`);
     await bulkDelete(message.channel, messages_to_delete);
 }
 
@@ -1549,9 +1558,17 @@ module.exports = {
                 if (message_id_idx >= 0) {
                     logger.info(`onMessageDelete: Deleting message ${message.id} from global_message_map[${guild_id}][${channel_id}] and global_embeds`);
                     global_message_map[guild_id][channel_id].splice(message_id_idx, 1);
-                    global_embeds.delete(message.id);
 
+                    const guild_cache = message.client.getCache(message.guild.id);
+                    const embed = get_embed(message.id);
+                    const channel_archives = await client_get_channel(message.client, guild_cache, CHANNEL_RUN_ARCHIVES);
+                    const channel_from = await get_embed_channel_from(message.client, embed);
+                    embed.setColor("#000000");
+                    embed.fields.splice(embed.fields.length - 1, 1);
+                    await channel_archives.send(embed);
+                    global_embeds.delete(message.id);
                     await client_refresh_board(message.client, message.client.getCache(guild_id), guild_id, channel_id);
+                    await channel_from.send(`✅ **${embed.title}** is over. Roster message has been archived!`);
                 }
             }
         }
