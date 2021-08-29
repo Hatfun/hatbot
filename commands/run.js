@@ -1623,6 +1623,7 @@ Organizing party:
 - note
 - set-roster
 - set-datetime
+- set-title
 - add-reminder
 - clear-reminders
 - when
@@ -1728,6 +1729,14 @@ Example:
 \`\`\`${PREFIX}run note
 CWPs will be provided thanks to our beloved sponsor @Hatfun \\o/
 \`\`\`
+If your channel is linked to multiple rosters, you'll then be asked to input which one to add note.
+`);
+            } else if (command === 'set-title') {
+                message_help(message, `${PREFIX}run set-title RUN NAME`,
+`Update the title of a run.
+
+Example:
+\`\`\`${PREFIX}run set-title LK ET 2021-09-02 NEW DATE!!!!\`\`\`
 If your channel is linked to multiple rosters, you'll then be asked to input which one to add note.
 `);
             } else if (command === 'set-roster') {
