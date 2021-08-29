@@ -185,6 +185,10 @@ function embed_update_note(embed, note) {
     embed.fields[note_idx].value = note;
 }
 
+function embed_update_run_name(embed, run_name) {
+    embed.title = run_name;
+}
+
 function embed_add_reminder(embed, reminder_minutes) {
     const readable = reminder_to_readable(reminder_minutes);
     const full_when = embed.fields[FIELD_WHEN].name;
@@ -1051,6 +1055,23 @@ async function message_update_note(message, msg_id_embed, note) {
 
     const channel_from = await get_embed_channel_from(message.client, embed);
     await channel_from.send(`✅ **${embed.title}**: Note updated!`);
+}
+
+async function message_update_run_name(message, msg_id_embed, run_name) {
+    const embed = msg_id_embed.embed;
+    const run_msg = await get_message_by_id_from_global_map(message.client, msg_id_embed.message_id);
+    for (const msg_id of global_message_map[message.guild.id][run_msg.channel.id]) {
+        if (get_embed(msg_id).title === run_name && msg_id != msg_id_embed.message_id) {
+            await message.channel.send(`❌ A run named '${run_name}' already exists!`);
+            return;
+        }
+    }
+    embed_update_run_name(embed, run_name);
+    embed_update_time_from_now(embed);
+    await run_msg.edit(embed);
+
+    const channel_from = await get_embed_channel_from(message.client, embed);
+    await channel_from.send(`✅ **${embed.title}**: Title updated!`);
 }
 
 async function message_add_reminder(message, msg_id_embed, reminder_minutes) {
@@ -2652,6 +2673,44 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                         const run_idx = parseInt(reply.content.trim());
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
                         await message_swap_players(message, msg_id_embed, user_id_1, user_id_2, messages_to_delete);
+                    });
+                });
+            }
+        } else if (args[0] === 'set-title') {
+            const title = args[1];
+            if (title == null) {
+                await message.channel.send(`❌ No title provided. Usage: \`${PREFIX}run set-title RUN NAME\``);
+                return;
+            }
+
+            // Get the list of runs that is linked to channel
+            const msg_id_embeds = get_embeds_linked_to_channel(message.channel.id);
+
+            if (msg_id_embeds.length == 0) {
+                await message.channel.send('❌ There\'s no run linked to this channel to set note!');
+            } else if (msg_id_embeds.length == 1) {
+                const msg_id_embed = msg_id_embeds[0];
+                await message_update_run_name(message, msg_id_embed, title);
+            } else {
+                const questionRun =
+`📄 Please choose a run to apply this title:
+
+${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n')}
+`;
+                const questionRunEmbed = new Discord.MessageEmbed().setTitle('Set title').setDescription(questionRun);
+
+                const messages_to_delete = [];
+                const filter = filter_number(message.channel, message.author.id, 1, msg_id_embeds.length, messages_to_delete);
+                await message.channel.send(questionRunEmbed)
+                .then(async choose_run_message => {
+                    messages_to_delete.push(choose_run_message);
+                    await message.channel.awaitMessages(filter, { max: 1 })
+                    .then(async replies => {
+                        const reply = replies.first();
+                        const run_idx = parseInt(reply.content.trim());
+                        const msg_id_embed = msg_id_embeds[run_idx - 1];
+                        await message_update_run_name(message, msg_id_embed, title);
+                        await bulkDelete(message.channel, messages_to_delete);
                     });
                 });
             }
