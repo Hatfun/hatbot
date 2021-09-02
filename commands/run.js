@@ -72,15 +72,19 @@ function set_user_free(user_id, guild_id, channel_id) {
     user_busy.delete(`${user_id}|${guild_id}|${channel_id}`);
 }
 
+const OLD_STYLE_RUN_DATE_FORMAT = 'dddd MMMM Do [@] h:mm A';
+const RUN_DATE_FORMAT = 'dddd MMMM Do[\n]HH:mm[ Server Time]';
+// const OLD_STYLE_RUN_DATE_FORMAT = 'dddd MMMM Do[\n]HH:mm[ Server Time]';
+// const RUN_DATE_FORMAT = 'dddd MMMM Do [@] h:mm A';
 function flexible_parse_date(date_str) {
     // Old style
-    let date_time = moment.tz(date_str, 'MMMM Do YYYY h:mm A', 'Europe/Berlin');
+    let date_time = moment.tz(date_str, OLD_STYLE_RUN_DATE_FORMAT, true, 'Europe/Berlin');
     if (!date_time.isValid()) {
         // New style. moment() always assumes it's for current year.
-        date_time = moment.tz(date_str, 'dddd MMMM Do [@] h:mm A', 'Europe/Berlin');
+        date_time = moment.tz(date_str, RUN_DATE_FORMAT, true, 'Europe/Berlin');
         // Try to parse next year, assuming that day of the week is NEVER the same on year n + 1
         if (!date_time.isValid()) {
-            date_time = moment.tz((moment().year() + 1) + " " + date_str, 'YYYY dddd MMMM Do [@] h:mm A', 'Europe/Berlin');
+            date_time = moment.tz((moment().year() + 1) + " " + date_str, RUN_DATE_FORMAT, true, 'Europe/Berlin');
             if (!date_time.isValid())
                 return null;
         }
@@ -112,7 +116,7 @@ function embed_update_date_time(embed, date_time) {
     // Old style
     // const when = `${SERVER_TIME_PREFIX}${date_time.format('MMMM Do YYYY h:mm A')}`;
     // New style
-    const when = `${SERVER_TIME_PREFIX}${date_time.format('dddd MMMM Do [@] h:mm A')}`;
+    const when = `${SERVER_TIME_PREFIX}${date_time.format(RUN_DATE_FORMAT)}`;
     embed.fields[FIELD_WHEN].name = when;
 
     embed_update_time_from_now(embed);
@@ -712,7 +716,7 @@ async function show_when(msg_id, user_id, channel, delete_prompt, messages_to_de
         }
     }
 
-    const question = `**${embed.title}** happens on **${when} Server Time!**
+    const question = `**${embed.title}** will happen on\n**${date_time.format('dddd MMMM Do [@] HH:mm [(]h:mm A[)]')} Server Time!**
 
 Please choose your timezone by entering a number between 1 and ${tz_array.length}:
 ${lines.join('\n')}
@@ -729,7 +733,7 @@ ${lines.join('\n')}
         const choice = parseInt(reply.first().content);
 
         const timezone = tz_array[choice - 1];
-        const converted_date_time = date_time.clone().tz(timezone.tz).format('dddd MMMM Do [@] h:mm A');
+        const converted_date_time = date_time.clone().tz(timezone.tz).format('dddd MMMM Do [@] HH:mm [(]h:mm A[)]');
         const time_embed = new Discord.MessageEmbed()
             .setTitle(`🕒  ${embed.title}`)
             .setDescription(`${timezone.flag}  This run will happen on\n**${converted_date_time} ${timezone.name} time**!\n${from_now}`);
@@ -1372,7 +1376,7 @@ async function client_refresh_board(client, guild_cache, guild_id, channel_id) {
 
    const content = runs.length == 0 ? 'Nothing happening' : runs
         .sort((r1, r2) => r1.date_time.valueOf() - r2.date_time.valueOf())
-        .map(r => `• **${r.date_time.format('dddd MMMM Do [@] h:mm A')} -** [${r.name}](https://discord.com/channels/${guild_id}/${channel_id}/${r.message_id})`)
+        .map(r => `• **${r.date_time.format('dddd MMMM Do [@] HH:mm')} -** [${r.name}](https://discord.com/channels/${guild_id}/${channel_id}/${r.message_id})`)
         .join('\n\n');
 
     const description = `Channel: <#${channel_id}>\n\n${content}`;
@@ -1585,6 +1589,7 @@ module.exports = {
                     const channel_archives = await client_get_channel(message.client, guild_cache, CHANNEL_RUN_ARCHIVES);
                     const channel_from = await get_embed_channel_from(message.client, embed);
                     embed.setColor("#000000");
+                    embed.fields[FIELD_WHEN].value = '\u200B';
                     embed.fields.splice(embed.fields.length - 1, 1);
                     await channel_archives.send(embed);
                     global_embeds.delete(message.id);
@@ -2537,7 +2542,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
             }
             const content = runs.length == 0 ? 'Nothing happening' : runs
                 .sort((r1, r2) => r1.date_time.valueOf() - r2.date_time.valueOf())
-                .map(r => `• **${r.date_time.format('dddd MMMM Do [@] h:mm A')} -** [${r.name}](https://discord.com/channels/${message.guild.id}/${channel_id}/${r.message_id})`)
+                .map(r => `• **${r.date_time.format('dddd MMMM Do [@] HH:mm')} -** [${r.name}](https://discord.com/channels/${message.guild.id}/${channel_id}/${r.message_id})`)
                 .join('\n\n');
 
             const embed = new Discord.MessageEmbed()
