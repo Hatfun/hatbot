@@ -17,8 +17,8 @@ module.exports = {
             await message.channel.send(embed);
         }
 
-        if (args[0] === 'help') {
-            const command = (args.length > 1) ? args[1] : null;
+        if (args == null || args[0] === 'help') {
+            const command = (args != null && args.length > 1) ? args[1] : null;
             if (command == null) {
                 help(`${PREFIX}hatbot`,
 `Administration of Hatbot.
@@ -27,7 +27,6 @@ Available \`${PREFIX}hatbot\` commands:
 \`\`\`
 - set-prefix
 - command-list
-- heap-dump
 \`\`\`
 Type \`${PREFIX}hatbot help COMMAND\` with the command of your choice for more info.`
                 );
@@ -46,14 +45,6 @@ Example:
 
 Example:
 \`\`\`${PREFIX}hatbot command-list
-\`\`\``
-                );
-            } else if (command === 'heap-dump') {
-                help(`${PREFIX}hatbot heap-dump`,
-`Dumps heap memory to file
-
-Example:
-\`\`\`${PREFIX}hatbot heap-dump
 \`\`\``
                 );
             } else {

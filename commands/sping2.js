@@ -102,8 +102,8 @@ module.exports = {
             await message.client.help(message, title, content);
         }
 
-        if (args[0] === 'help') {
-            const command = (args.length > 1) ? args[1] : null;
+        if (args == null || args[0] === 'help') {
+            const command = (args != null && args.length > 1) ? args[1] : null;
             if (command == null) {
                 help(`${PREFIX}sping2`,
 `Small utilities to manage sping2s.

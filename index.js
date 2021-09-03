@@ -216,15 +216,16 @@ client.on('message', async message => {
     const prefix = await client.getPrefix(message.guild.id);
     if (!trimmed.startsWith(prefix)) return;
     const match = /[ \n]/.exec(trimmed);
-    if (match === null) return;
-    const firstSplit = [trimmed.slice(0, match.index), trimmed.slice(match.index + 1)];
-    if (firstSplit.length < 2) return;
+    const firstSplit = match === null ? [trimmed] : [trimmed.slice(0, match.index), trimmed.slice(match.index + 1)];
+    let args = null;
     const command = firstSplit[0];
-    const match2 = /[ \n]/.exec(firstSplit[1]);
-    const args = match2 === null ? [firstSplit[1].trim()] : [firstSplit[1].slice(0, match2.index).trim(), firstSplit[1].slice(match2.index + 1).trim()];
+    if (firstSplit.length >= 2) {
+        const match2 = /[ \n]/.exec(firstSplit[1]);
+        args = match2 === null ? [firstSplit[1].trim()] : [firstSplit[1].slice(0, match2.index).trim(), firstSplit[1].slice(match2.index + 1).trim()];
+    }
     const noprefix_command = command.slice(1);
     if (!client.commands.has(noprefix_command)) return;
-    logger.info(`${message.author.id} ${command} ${JSON.stringify(args)}`);
+    logger.info(`${message.author.id} ${command} ${args == null ? '' : JSON.stringify(args)}`);
     try {
         await client.commands.get(noprefix_command).execute(message, args);
     } catch (error) {

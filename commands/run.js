@@ -514,6 +514,49 @@ function embed_swap_roles(embed, user_id_1, role_1, user_id_2, role_2) {
     embed.description = lines.join('\n');
 }
 
+function embed_move_role(embed, user_id, old_role, new_role_emoji) {
+    const lines = embed.description.split('\n');
+    let line_1 = null;
+    let line_2 = null;
+    for (let i = 0; i < lines.length; ++i) {
+        const unicodeRegex = emojiRegex();
+        const hasEmoteRegex = /^(<a?:.+?:\d+>).+$/gm
+
+        const line = lines[i];
+        let match;
+        let emoji = null;
+        if ((match = unicodeRegex.exec(line)) && match.index === 0) {
+            emoji = match[0];
+        } else if ((match = hasEmoteRegex.exec(line)) && match.index === 0) {
+            emoji = match[1];
+        }
+        if (emoji != null && (match = /<@[!]?(\d+)>/.exec(line)) != null) {
+            const match_user_id = match[1];
+            if (match_user_id === user_id) {
+                const role = line.slice(0, match.index);
+                const rest_of_line = line.slice(match.index);
+
+                if (role == old_role && line_1 == null) {
+                    line_1 = { idx: i, role: role, rest_of_line: rest_of_line };
+                }
+            }
+        }
+        if (emoji != null && emoji == new_role_emoji && /<@[!]?(\d+)>/.exec(line) == null && line_2 == null) {
+            line_2 = { idx: i, role: line, rest_of_line: '' };
+        }
+    }
+    if (line_1 != null && line_2 != null) {
+        lines[line_1.idx] = `${line_1.role}${line_2.rest_of_line}`;
+        lines[line_2.idx] = `${line_2.role}${line_1.rest_of_line}`;
+        embed.description = lines.join('\n');
+
+        return true;
+    } else {
+        return false;
+    }
+
+}
+
 async function get_embed_channel_from(client, embed) {
     const channel_id = embed_get_channel_from_id(embed);
     const channel_from = await client.discord_cache.getChannel(channel_id);
@@ -1331,6 +1374,65 @@ ${distinct_user_roles_2.map((elt, idx) => `\`${idx + 1}.\`    ${elt.emoji}`).joi
     await bulkDelete(message.channel, messages_to_delete);
 }
 
+async function message_move_player(message, msg_id_embed, user_id, messages_to_delete) {
+    const embed = msg_id_embed.embed;
+    const run_msg = await get_message_by_id_from_global_map(message.client, msg_id_embed.message_id);
+    const roles = embed_get_roles_for_user(embed, user_id);
+
+    let role;
+    if (roles.length == 0) {
+        await message.channel.send(`❌ **${embed.title}**: <@${user_id}> doesn't have any role!`);
+        await bulkDelete(message.channel, messages_to_delete);
+        return;
+    }
+    if (roles.length == 1) {
+        role = roles[0];
+    } else if (roles.length > 1) {
+        const distinct_user_roles = distinct_roles(roles);
+        const questionRole =
+`👤 Please choose <@${user_id}>'s role to move:
+
+${distinct_user_roles.map((elt, idx) => `\`${idx + 1}.\`    ${elt.emoji}`).join('\n')}
+`;
+        const questionRoleEmbed = new Discord.MessageEmbed().setTitle('Choose current role').setDescription(questionRole);
+
+        const filter = filter_number(message.channel, message.author.id, 1, distinct_user_roles.length, messages_to_delete);
+        const choose_role_message = await message.channel.send(questionRoleEmbed);
+        messages_to_delete.push(choose_role_message);
+        const replies = await message.channel.awaitMessages(filter, { max: 1 });
+        const reply = replies.first();
+        role = distinct_user_roles[parseInt(reply.content.trim()) - 1];
+    }
+
+    const emojis = Array.from(embed_get_distinct_available_emojis(embed));
+    if (emojis.length == 0) {
+        await message.channel.send(`❌ **${embed.title}**: There's no available role!`);
+        return;
+    }
+    const questionRole =
+`👤 Please choose an available new role:
+
+${emojis.map((elt, idx) => `\`${idx + 1}.\`    ${elt}`).join('\n')}
+`;
+    const questionRoleEmbed = new Discord.MessageEmbed().setTitle('Choose new role').setDescription(questionRole);
+
+    const filter = filter_number(message.channel, message.author.id, 1, emojis.length, messages_to_delete);
+    const choose_role_message = await message.channel.send(questionRoleEmbed);
+    messages_to_delete.push(choose_role_message);
+    const replies = await message.channel.awaitMessages(filter, { max: 1 });
+    const reply = replies.first();
+    const emoji_idx = parseInt(reply.content.trim());
+    const emoji_name = emojis[emoji_idx - 1];
+
+    if (embed_move_role(embed, user_id, role.role, emoji_name)) {
+        await run_msg.edit(embed);
+        await message.channel.send(`**${embed.title}**: <@${user_id}> moved from ${role.emoji} to ${emoji_name}!`);
+    } else {
+        await message.channel.send(`❌ **${embed.title}**: Cannot move <@${user_id}> from ${role.emoji} to ${emoji_name}!`);
+    }
+    await bulkDelete(message.channel, messages_to_delete);
+}
+
 async function message_help(message, title, content) {
     await message.client.help(message, title, content);
 }
@@ -1604,8 +1706,8 @@ module.exports = {
 
         const guild_cache = message.client.getCache(message.guild.id);
 
-        if (args[0] === 'help') {
-            const command = (args.length > 1) ? args[1] : null;
+        if (args == null || args[0] === 'help') {
+            const command = (args != null && args.length > 1) ? args[1] : null;
             if (command == null) {
                 message_help(message, `${PREFIX}run`,
 `Organize instances.
@@ -1637,6 +1739,7 @@ Organizing party:
 - char
 - change-role
 - swap
+- move
 - end
 \`\`\`
 Type \`${PREFIX}run help COMMAND\` with the command of your choice for more info.`
@@ -1852,13 +1955,12 @@ If your channel is linked to multiple rosters, you'll then be asked to input whi
 `);
             } else if (command === 'swap') {
                 message_help(message, `${PREFIX}run swap <@user_1> <@user_2>`,
-`Update the line up to change the signed up role of @user into a new role <emoji and name>. The new role MUST start with an emoji.
-If @user is not provided, the sender of the command will be used as user.
+`Swap the roles of @user1 and @user2
 
 Example:
 \`\`\`${PREFIX}run swap @Hatfun @Sleepy\`\`\`
 You might then be asked to input the following:
-- If your channel is linked to multiple rosters, which one to display time
+- If your channel is linked to multiple rosters, which one to swap players
 - If the users signed up for multiple roles, which role should be swapped
 `);
             } else if (command === 'add-role-mention') {
@@ -1874,6 +1976,17 @@ Example:
 
 Example:
 \`\`\`${PREFIX}run remove-role-mention @EndlessTowerRole\`\`\`
+`);
+            } else if (command === 'move') {
+                message_help(message, `${PREFIX}run move <@user>`,
+`Move @user to a new role.
+
+Example:
+\`\`\`${PREFIX}run move @Hatfun\`\`\`
+You might then be asked to input the following:
+- If your channel is linked to multiple rosters, which one to move player
+- If the users signed up for multiple roles, which role the player will leave
+- New role
 `);
             }
         } else if (args[0] === 'set-template-channel') {
@@ -2600,7 +2713,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
             await message.channel.send(`✅ ${role} will no longer be listed to the possible roles to mention when creating a new run!`);
         } else if (args[0] === 'change-role') {
             let match;
-            if ((match = /^(<@[!]?(\d+)>\s+)?([^\s].*)$/.exec(args[1])) == null) {
+            if ((match = /^(<@[!]?(\d+)>\s+)?([^\s].*)$/.exec(args[1])) == null || /<@[!]?(\d+)>/.exec(match[3]) != null) {
                 await message.channel.send(`❌ Usage \`${PREFIX}run change-role [@user] <emoji and text>\``);
                 return;
             }
@@ -2725,6 +2838,44 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
                         await message_update_run_name(message, msg_id_embed, title);
                         await bulkDelete(message.channel, messages_to_delete);
+                    });
+                });
+            }
+        } else if (args[0] === 'move') {
+            let match;
+            if ((match = /^<@[!]?(\d+)>$/.exec(args[1])) == null) {
+                await message.channel.send(`❌ Usage \`${PREFIX}run move @user\``);
+                return;
+            }
+            const user_id = match[1];
+
+            // Get the list of runs that is linked to channel
+            const msg_id_embeds = get_embeds_linked_to_channel(message.channel.id);
+
+            if (msg_id_embeds.length == 0) {
+                await message.channel.send('❌ There\'s no run linked to this channel to move player!');
+            } else if (msg_id_embeds.length == 1) {
+                const msg_id_embed = msg_id_embeds[0];
+                await message_move_player(message, msg_id_embed, user_id, []);
+            } else {
+                const questionRun =
+`📄 Please choose a run to move player:
+
+${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n')}
+`;
+                const questionRunEmbed = new Discord.MessageEmbed().setTitle('Move player').setDescription(questionRun);
+
+                const messages_to_delete = [];
+                const filter = filter_number(message.channel, message.author.id, 1, msg_id_embeds.length, messages_to_delete);
+                await message.channel.send(questionRunEmbed)
+                .then(async choose_run_message => {
+                    messages_to_delete.push(choose_run_message);
+                    await message.channel.awaitMessages(filter, { max: 1 })
+                    .then(async replies => {
+                        const reply = replies.first();
+                        const run_idx = parseInt(reply.content.trim());
+                        const msg_id_embed = msg_id_embeds[run_idx - 1];
+                        await message_move_player(message, msg_id_embed, user_id, messages_to_delete);
                     });
                 });
             }
