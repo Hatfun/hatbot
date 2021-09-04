@@ -101,7 +101,27 @@ function embed_get_channel_from_id(embed) {
 }
 
 function embed_update_roster(embed, roster) {
-    embed.setDescription(roster);
+    const lines = roster.split('\n');
+    // Escape char names with formatting characters
+    for (let i = 0; i < lines.length; ++i) {
+        const unicodeRegex = emojiRegex();
+        const hasEmoteRegex = /^(<a?:.+?:\d+>).+$/gm
+
+        const line = lines[i];
+        let match;
+        let emoji = null;
+        if ((match = unicodeRegex.exec(line)) && match.index === 0) {
+            emoji = match[0];
+        } else if ((match = hasEmoteRegex.exec(line)) && match.index === 0) {
+            emoji = match[1];
+        }
+        if (emoji != null && (match = /<@[!]?(\d+)> \[(.*)\]$/.exec(line)) != null) {
+            const match_user_id = match[1];
+            const char_name = match[2];
+            lines[i] = line.slice(0, match.index) + ` <@${match_user_id}> [${Discord.escapeMarkdown(char_name)}]`;
+        }
+    }
+    embed.setDescription(lines.join('\n'));
 }
 
 function embed_update_time_from_now(embed) {
