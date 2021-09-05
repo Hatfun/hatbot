@@ -797,9 +797,10 @@ ${lines.join('\n')}
 
         const timezone = tz_array[choice - 1];
         const converted_date_time = date_time.clone().tz(timezone.tz).format('dddd MMMM Do [@] HH:mm [(]h:mm A[)]');
+        const happen_wording = from_now == 'Now' ? 'is happening' : date_time.isBefore(moment()) ? 'happened' : 'will happen';
         const time_embed = new Discord.MessageEmbed()
             .setTitle(`🕒  ${embed.title}`)
-            .setDescription(`${timezone.flag}  This run will happen on\n**${converted_date_time} ${timezone.name} time**!\n${from_now}`);
+            .setDescription(`${timezone.flag}  This run ${happen_wording} on\n**${converted_date_time} ${timezone.name} time**!\n${from_now}`);
         await channel.send(time_embed);
         if (delete_prompt) {
             await bulkDelete(channel, messages_to_delete);
@@ -1105,8 +1106,8 @@ async function message_update_datetime(message, guild_cache, msg_id_embed, date_
         const run_msg = await get_message_by_id_from_global_map(message.client, msg_id_embed.message_id);
         await run_msg.edit(embed);
 
-        const channel_from = await get_embed_channel_from(message.client, embed);
         await client_refresh_board(message.client, guild_cache, message.guild.id, run_msg.channel.id);
+        const channel_from = await get_embed_channel_from(message.client, embed);
         await channel_from.send(`✅ **${embed.title}**: Date and time updated!`);
     }
 }
@@ -1124,7 +1125,7 @@ async function message_update_note(message, msg_id_embed, note) {
     await channel_from.send(`✅ **${embed.title}**: Note updated!`);
 }
 
-async function message_update_run_name(message, msg_id_embed, run_name) {
+async function message_update_run_name(message, guild_cache, msg_id_embed, run_name) {
     const embed = msg_id_embed.embed;
     const run_msg = await get_message_by_id_from_global_map(message.client, msg_id_embed.message_id);
     for (const msg_id of global_message_map[message.guild.id][run_msg.channel.id]) {
@@ -1137,6 +1138,7 @@ async function message_update_run_name(message, msg_id_embed, run_name) {
     embed_update_time_from_now(embed);
     await run_msg.edit(embed);
 
+    await client_refresh_board(message.client, guild_cache, message.guild.id, run_msg.channel.id);
     const channel_from = await get_embed_channel_from(message.client, embed);
     await channel_from.send(`✅ **${embed.title}**: Title updated!`);
 }
@@ -2837,7 +2839,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send('❌ There\'s no run linked to this channel to set note!');
             } else if (msg_id_embeds.length == 1) {
                 const msg_id_embed = msg_id_embeds[0];
-                await message_update_run_name(message, msg_id_embed, title);
+                await message_update_run_name(message, guild_cache, msg_id_embed, title);
             } else {
                 const questionRun =
 `📄 Please choose a run to apply this title:
@@ -2856,7 +2858,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
-                        await message_update_run_name(message, msg_id_embed, title);
+                        await message_update_run_name(message, guild_cache, msg_id_embed, title);
                         await bulkDelete(message.channel, messages_to_delete);
                     });
                 });
