@@ -3,15 +3,20 @@
 const Discord = require('discord.js-light');
 const emojiRegex = require('emoji-regex/RGI_Emoji.js');
 const moment = require('moment-timezone');
-const logger = require('../libs/logger.js')
+const logger = require('../libs/logger.js');
+const config = require('../config.json');
 
 const GLOBAL_MESSAGE_MAP = 'run_global_message_map';
 const CHANNEL_TEMPLATE = 'run_template_channel';
 const CHANNEL_RUN_ARCHIVES = 'run_archives_channel';
 const CHANNEL_RUN_BOARD = 'run_board_channel';
+const RUN_DEFAULT_TIMEZONE = 'run_default_timezone';
 const ROLE_MENTIONS = 'run_role_mentions';
 const BOARDS = 'run_boards';
-const COLORS = ['#E1D733', '#0043E7', '#C403FD', '#FF16BF', '#FFB517', '#1EEBD8', '#AEBDBC', '#ECECEC', '#A6EFFF', '#269E69'];
+const COLORS = [
+    '#E1D733', '#0043E7', '#C403FD', '#FF16BF', '#FFB517', '#1EEBD8', '#AEBDBC', '#ECECEC', '#A6EFFF', '#269E69', '#FFD700', '#228B22',
+    '#00CED1', '#4169E1', '#BC8F8F', '#FAEBD7', '#808080', '#8B008B', '#FA8072', '#FF6347', '#BDB76B', '#7FFF00', '#008080', '#87CEFA'
+];
 
 const global_embeds = new Discord.Collection();
 let global_message_map = {};
@@ -57,7 +62,7 @@ function hashCode(s) {
 }
 
 function color(s) {
-    return COLORS[hashCode(s) % COLORS.length];
+    return COLORS[Math.abs(hashCode(s)) % COLORS.length];
 }
 
 function set_user_busy(user_id, guild_id, channel_id) {
@@ -577,6 +582,21 @@ function embed_move_role(embed, user_id, old_role, new_role_emoji) {
 
 }
 
+async function set_user_default_timezone(client, user_id, timezone) {
+    const global_cache = client.getCache('global');
+    await global_cache.set(RUN_DEFAULT_TIMEZONE + '|' + user_id, timezone);
+}
+
+async function get_user_default_timezone(client, user_id) {
+    const global_cache = client.getCache('global');
+    return await global_cache.get(RUN_DEFAULT_TIMEZONE + '|' + user_id);
+}
+
+async function forget_user_default_timezone(client, user_id) {
+    const global_cache = client.getCache('global');
+    await global_cache.delete(RUN_DEFAULT_TIMEZONE + '|' + user_id);
+}
+
 async function get_embed_channel_from(client, embed) {
     const channel_id = embed_get_channel_from_id(embed);
     const channel_from = await client.discord_cache.getChannel(channel_id);
@@ -760,58 +780,71 @@ ${added_char_names.join('\n')}`);
     }
 }
 
-async function show_when(msg_id, user_id, channel, delete_prompt, messages_to_delete) {
+async function core_show_when(date_time, timezone, embed, channel, delete_prompt, messages_to_delete, extra_footer) {
+    const from_now = readable_date_from_now(date_time);
+    const converted_date_time = date_time.clone().tz(timezone.tz).format('dddd MMMM Do [@] HH:mm [(]h:mm A[)]');
+    const happen_wording = from_now == 'Now' ? 'is happening' : date_time.isBefore(moment()) ? 'happened' : 'will happen';
+    const time_embed = new Discord.MessageEmbed()
+        .setTitle(`🕒  ${embed.title}`)
+        .setDescription(`${timezone.flag}  This run ${happen_wording} on\n**${converted_date_time} ${timezone.name} time**!\n${from_now}`);
+    if (extra_footer != null) {
+        time_embed.setFooter(extra_footer);
+    }
+    await channel.send(time_embed);
+    if (delete_prompt) {
+        await bulkDelete(channel, messages_to_delete);
+    }
+}
+
+async function show_when(client, msg_id, user_id, channel, delete_prompt, messages_to_delete, extra_footer) {
     const embed = get_embed(msg_id);
     const full_when = embed.fields[FIELD_WHEN].name;
     const when = full_when.substring(SERVER_TIME_PREFIX.length);
     const date_time = flexible_parse_date(when);
-    const from_now = readable_date_from_now(date_time);
 
-    const tz_array = [];
-    let i = 0;
-    const lines = [];
-    for (const region_tz of TIMEZONES) {
-        lines.push(`\n**${region_tz.region}**`)
-        for (const tz of region_tz.timezones) {
-            i++;
-            lines.push(`\`${(i + '.').padEnd(3)}\`  ${tz.flag} ${tz.name}`);
-            tz_array.push(tz);
+    let timezone = await get_user_default_timezone(client, user_id);
+    // Only doing that for DM, on which there's no delete_prompt
+    if (timezone != null && !delete_prompt) {
+        await core_show_when(date_time, timezone, embed, channel, delete_prompt, messages_to_delete);
+    } else {
+        const extra_footer = timezone == null && !delete_prompt ? `To set your default timezone, DM the following command:\n${config.default_prefix}run set-default-timezone` : null;
+        const tz_array = [];
+        let i = 0;
+        const lines = [];
+        for (const region_tz of TIMEZONES) {
+            lines.push(`\n**${region_tz.region}**`)
+            for (const tz of region_tz.timezones) {
+                i++;
+                lines.push(`\`${(i + '.').padEnd(3)}\`  ${tz.flag} ${tz.name}`);
+                tz_array.push(tz);
+            }
         }
-    }
 
-    const question = `**${embed.title}** will happen on\n**${date_time.format('dddd MMMM Do [@] HH:mm [(]h:mm A[)]')} Server Time!**
+        const question = `**${embed.title}** will happen on\n**${date_time.format('dddd MMMM Do [@] HH:mm [(]h:mm A[)]')} Server Time!**
 
-Please choose your timezone by entering a number between 1 and ${tz_array.length}:
-${lines.join('\n')}
-`;
-    const question_embed = new Discord.MessageEmbed().setTitle('🕒 Select timezone').setDescription(question);
+    Please choose your timezone by entering a number between 1 and ${tz_array.length}:
+    ${lines.join('\n')}
+    `;
+        const question_embed = new Discord.MessageEmbed().setTitle('🕒 Select timezone').setDescription(question);
 
-    const filter = filter_number(channel, user_id, 1, tz_array.length, messages_to_delete);
-    const question_msg = await channel.send(question_embed);
-    if (messages_to_delete != null) {
-        messages_to_delete.push(question_msg);
-    }
-    await channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
-    .then(async reply => {
-        const choice = parseInt(reply.first().content);
-
-        const timezone = tz_array[choice - 1];
-        const converted_date_time = date_time.clone().tz(timezone.tz).format('dddd MMMM Do [@] HH:mm [(]h:mm A[)]');
-        const happen_wording = from_now == 'Now' ? 'is happening' : date_time.isBefore(moment()) ? 'happened' : 'will happen';
-        const time_embed = new Discord.MessageEmbed()
-            .setTitle(`🕒  ${embed.title}`)
-            .setDescription(`${timezone.flag}  This run ${happen_wording} on\n**${converted_date_time} ${timezone.name} time**!\n${from_now}`);
-        await channel.send(time_embed);
-        if (delete_prompt) {
-            await bulkDelete(channel, messages_to_delete);
+        const filter = filter_number(channel, user_id, 1, tz_array.length, messages_to_delete);
+        const question_msg = await channel.send(question_embed);
+        if (messages_to_delete != null) {
+            messages_to_delete.push(question_msg);
         }
-    }).catch(timeout_function(channel, user_id));
+        await channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
+        .then(async reply => {
+            const choice = parseInt(reply.first().content);
+            timezone = tz_array[choice - 1];
+            await core_show_when(date_time, timezone, embed, channel, delete_prompt, messages_to_delete, extra_footer);
+        }).catch(timeout_function(channel, user_id));
+    }
 }
 
 async function process_reaction(reaction, user) {
     if (reaction.emoji.name === '🕒') {
         const dm_channel = await user.createDM(true);
-        await show_when(reaction.message.id, user.id, dm_channel, false);
+        await show_when(reaction.message.client, reaction.message.id, user.id, dm_channel, false);
     } else if (reaction.emoji.name === '📝') {
         const dm_channel = await user.createDM(true);
         await update_char_name_to_roster(reaction.message.client, reaction.message, user.id, dm_channel, user);
@@ -2550,7 +2583,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send('❌ There\'s no run linked to this channel to display date and time!');
             } else if (msg_id_embeds.length == 1) {
                 const msg_id_embed = msg_id_embeds[0];
-                await show_when(msg_id_embed.message_id, message.author.id, message.channel, true, []);
+                await show_when(message.client, msg_id_embed.message_id, message.author.id, message.channel, true, []);
             } else {
                 const questionRun =
 `📄 Please choose a run to display date and time:
@@ -2569,7 +2602,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
-                        await show_when(msg_id_embed.message_id, message.author.id, message.channel, true, messages_to_delete);
+                        await show_when(message.client, msg_id_embed.message_id, message.author.id, message.channel, true, messages_to_delete);
                     });
                 });
             }
@@ -2901,6 +2934,75 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                     });
                 });
             }
+        }
+    },
+    async executeDM(message, args) {
+        if (args == null || args[0] === 'help') {
+        } else if (args[0] === 'list') {
+            const user_id = message.author.id;
+
+            const client = message.client;
+            const runs = [];
+            for (const guild_id in global_message_map) {
+                const guild = await client.discord_cache.getGuild(guild_id);
+                for (const channel_id in global_message_map[guild_id]) {
+                    const channel = await client.discord_cache.getChannel(channel_id);
+                    for (const message_id of global_message_map[guild_id][channel_id]) {
+                        const embed = get_embed(message_id);
+                        const players = embed_get_players(embed);
+                        if (players.includes(`<@${user_id}>`) || players.includes(`<@!${user_id}>`)) {
+                            const full_when = embed.fields[FIELD_WHEN].name;
+                            const when = full_when.substring(SERVER_TIME_PREFIX.length);
+                            const date_time = flexible_parse_date(when);
+
+                            runs.push({ guild_name: guild.name, guild_id: guild_id, channel_id: channel_id, message_id: message_id, embed: embed, date_time: date_time });
+                        }
+                    }
+                }
+            }
+
+            const content = runs.length == 0 ? 'Nothing happening' : 'You signed up for the following runs:\n\n' + runs
+                .sort((r1, r2) => r1.date_time.valueOf() - r2.date_time.valueOf())
+                .map(r => `• **${r.date_time.format('dddd MMMM Do [@] HH:mm')} -** [${r.embed.title}](https://discord.com/channels/${r.guild_id}/${r.channel_id}/${r.message_id}) (${r.guild_name})`)
+                .join('\n\n');
+
+            const description = `${content}`;
+            const list_embed = new Discord.MessageEmbed().setTitle('🗓️ Run list').setDescription(description);
+            await message.channel.send(list_embed);
+        } else if (args[0] === 'set-default-timezone') {
+            const channel = message.channel;
+            const user_id = message.author.id;
+            const tz_array = [];
+            let i = 0;
+            const lines = ['`0. `  No default'];
+            for (const region_tz of TIMEZONES) {
+                lines.push(`\n**${region_tz.region}**`)
+                for (const tz of region_tz.timezones) {
+                    i++;
+                    lines.push(`\`${(i + '.').padEnd(3)}\`  ${tz.flag} ${tz.name}`);
+                    tz_array.push(tz);
+                }
+            }
+
+            const question = `Please choose your default timezone by entering a number between 0 and ${tz_array.length}:
+
+${lines.join('\n')}`;
+            const question_embed = new Discord.MessageEmbed().setTitle('🕒 Select timezone').setDescription(question);
+
+            const filter = filter_number(channel, user_id, 0, tz_array.length);
+            const question_msg = await channel.send(question_embed);
+            await channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
+            .then(async reply => {
+                const choice = parseInt(reply.first().content);
+                if (choice == 0) {
+                    await forget_user_default_timezone(message.client, user_id);
+                    await channel.send(`✅ Next time you'll react 🕒 to get time of a run, you'll be asked for which timezone!`);
+                } else {
+                    const timezone = tz_array[choice - 1];
+                    await set_user_default_timezone(message.client, user_id, timezone);
+                    await channel.send(`${timezone.flag} Whenever you'll react 🕒 to get time of a run, it will displayed as **${timezone.name} time**!`);
+                }
+            }).catch(timeout_function(channel, user_id));
         }
     }
 }

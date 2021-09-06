@@ -211,26 +211,40 @@ client.once('ready', async () => {
 
 client.on('message', async message => {
     if (message.author.bot) return;
-    if (message.channel.type === 'dm') return;
+    const prefix = message.channel.type === 'dm' ? config.default_prefix : await client.getPrefix(message.guild.id);
+    if (!message.content.startsWith(prefix)) return;
+
     const trimmed = message.content.trim();
-    const prefix = await client.getPrefix(message.guild.id);
-    if (!trimmed.startsWith(prefix)) return;
     const match = /[ \n]/.exec(trimmed);
     const firstSplit = match === null ? [trimmed] : [trimmed.slice(0, match.index), trimmed.slice(match.index + 1)];
     let args = null;
     const command = firstSplit[0];
+    const noprefix_command = command.slice(1);
+    if (!client.commands.has(noprefix_command)) return;
+
     if (firstSplit.length >= 2) {
         const match2 = /[ \n]/.exec(firstSplit[1]);
         args = match2 === null ? [firstSplit[1].trim()] : [firstSplit[1].slice(0, match2.index).trim(), firstSplit[1].slice(match2.index + 1).trim()];
     }
-    const noprefix_command = command.slice(1);
-    if (!client.commands.has(noprefix_command)) return;
-    logger.info(`${message.author.id} ${command} ${args == null ? '' : JSON.stringify(args)}`);
-    try {
-        await client.commands.get(noprefix_command).execute(message, args);
-    } catch (error) {
-        logger.error(error.stack);
-        await message.channel.send('❌ Some unexpected error occurred.\n<@281527853173178368>!!!! You\'re a noob!! Fix it now!');
+
+    if (message.channel.type === 'dm') {
+        logger.info(`DM: ${message.author.id} ${command} ${args == null ? '' : JSON.stringify(args)}`);
+        try {
+            if (client.commands.get(noprefix_command).executeDM != null) {
+                await client.commands.get(noprefix_command).executeDM(message, args);
+            }
+        } catch (error) {
+            logger.error(error.stack);
+            await message.channel.send('❌ Some unexpected error occurred.\n<@281527853173178368>!!!! You\'re a noob!! Fix it now!');
+        }
+    } else {
+        logger.info(`${message.author.id} ${command} ${args == null ? '' : JSON.stringify(args)}`);
+        try {
+            await client.commands.get(noprefix_command).execute(message, args);
+        } catch (error) {
+            logger.error(error.stack);
+            await message.channel.send('❌ Some unexpected error occurred.\n<@281527853173178368>!!!! You\'re a noob!! Fix it now!');
+        }
     }
 });
 
