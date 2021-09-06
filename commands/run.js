@@ -10,7 +10,7 @@ const GLOBAL_MESSAGE_MAP = 'run_global_message_map';
 const CHANNEL_TEMPLATE = 'run_template_channel';
 const CHANNEL_RUN_ARCHIVES = 'run_archives_channel';
 const CHANNEL_RUN_BOARD = 'run_board_channel';
-const RUN_DEFAULT_TIMEZONE = 'run_default_timezone';
+const RUN_USER_SETTINGS = 'run_user_settings';
 const ROLE_MENTIONS = 'run_role_mentions';
 const BOARDS = 'run_boards';
 const COLORS = [
@@ -391,7 +391,7 @@ function embed_get_players(embed) {
         }
 
         if (emoji != null && (match = /<@[!]?(\d+)>/.exec(line)) != null) {
-            players.add(`<@${match[1]}>`);
+            players.add(match[1]);
         }
     }
 
@@ -582,19 +582,43 @@ function embed_move_role(embed, user_id, old_role, new_role_emoji) {
 
 }
 
-async function set_user_default_timezone(client, user_id, timezone) {
+async function get_user_settings(client, user_id) {
     const global_cache = client.getCache('global');
-    await global_cache.set(RUN_DEFAULT_TIMEZONE + '|' + user_id, timezone);
+    const user_settings = await global_cache.get(RUN_USER_SETTINGS + '|' + user_id);
+    return user_settings != null ? user_settings : {};
+}
+
+async function set_user_settings(client, user_id, user_settings) {
+    const global_cache = client.getCache('global');
+    await global_cache.set(RUN_USER_SETTINGS + '|' + user_id, user_settings);
+}
+
+async function set_user_default_timezone(client, user_id, timezone) {
+    const user_settings = await get_user_settings(client, user_id);
+    user_settings.timezone = timezone;
+    await set_user_settings(client, user_id, user_settings);
 }
 
 async function get_user_default_timezone(client, user_id) {
-    const global_cache = client.getCache('global');
-    return await global_cache.get(RUN_DEFAULT_TIMEZONE + '|' + user_id);
+    const user_settings = await get_user_settings(client, user_id);
+    return user_settings.timezone;
+}
+
+async function set_user_dm_reminder(client, user_id, dm_reminder) {
+    const user_settings = await get_user_settings(client, user_id);
+    user_settings.dm_reminder = dm_reminder;
+    await set_user_settings(client, user_id, user_settings);
+}
+
+async function get_user_dm_reminder(client, user_id) {
+    const user_settings = await get_user_settings(client, user_id);
+    return user_settings.dm_reminder;
 }
 
 async function forget_user_default_timezone(client, user_id) {
-    const global_cache = client.getCache('global');
-    await global_cache.delete(RUN_DEFAULT_TIMEZONE + '|' + user_id);
+    const user_settings = await get_user_settings(client, user_id);
+    delete user_settings.timezone;
+    await set_user_settings(client, user_id, user_settings);
 }
 
 async function get_embed_channel_from(client, embed) {
@@ -920,11 +944,23 @@ async function check_and_update_reminders(client, embed) {
         const players = embed_get_players(embed);
         if (players.length > 0) {
             const channel_from = await get_embed_channel_from(client, embed);
-            const content = `📢 **${embed.title}**
-${players.join(' ')}
+            const when_str = flexible_parse_date(when).format('dddd MMMM Do [@] HH:mm[ Server Time]');
+            const reminder_message = `This is an automated reminder that **${embed.title}** will happen on **${when_str}** (${embed.fields[FIELD_WHEN].value})`
+            const content = `⏰ **${embed.title}**
+${players.map(p => `<@${p}>`).join(' ')}
 
-This is an automated reminder that **${embed.title}** will happen on **${when}** (${embed.fields[FIELD_WHEN].value})`;
+${reminder_message}`;
             await channel_from.send(content);
+
+            // Check for players to DM
+            for (const user_id of players) {
+                const dm_reminder = await get_user_dm_reminder(client, user_id);
+                if (dm_reminder) {
+                    const user = await client.users.fetch(user_id);
+                    const dm_embed = new Discord.MessageEmbed().setTitle(`⏰ ${embed.title}`).setDescription(reminder_message);
+                    await user.send(dm_embed);
+                }
+            }
         }
     }
 
@@ -966,7 +1002,7 @@ async function update_all_runs(client) {
                         messages_to_cleanup.push({ guild_id: guild_id, channel_id: channel_id, message_id: message_id });
                         logger.info(`update_all_runs: Message ${guild_id}/${channel_id}/${message_id} not found! Removing from cache!`);
                     } else {
-                        logger.error(exception);
+                        logger.error(exception.stack);
                     }
                 }
             }
@@ -1203,7 +1239,7 @@ async function message_ping(message, embed, ping_message) {
     const channel_from = await get_embed_channel_from(message.client, embed);
     if (players.length > 0) {
       const content = `📢 **${embed.title}**
-${players.join(' ')}
+${players.map(p => `<@${p}>`).join(' ')}
 
 ${ping_message}`;
         await channel_from.send(content);
@@ -2950,7 +2986,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                     for (const message_id of global_message_map[guild_id][channel_id]) {
                         const embed = get_embed(message_id);
                         const players = embed_get_players(embed);
-                        if (players.includes(`<@${user_id}>`) || players.includes(`<@!${user_id}>`)) {
+                        if (players.includes(user_id)) {
                             const full_when = embed.fields[FIELD_WHEN].name;
                             const when = full_when.substring(SERVER_TIME_PREFIX.length);
                             const date_time = flexible_parse_date(when);
@@ -3002,6 +3038,27 @@ ${lines.join('\n')}`;
                     await set_user_default_timezone(message.client, user_id, timezone);
                     await channel.send(`${timezone.flag} Whenever you'll react 🕒 to get time of a run, it will displayed as **${timezone.name} time**!`);
                 }
+            }).catch(timeout_function(channel, user_id));
+        } else if (args[0] === 'set-dm-reminder') {
+            const channel = message.channel;
+            const user_id = message.author.id;
+            const dm_reminders = [{ text: 'Yes', value: true }, { text: 'No', value: false }]
+            const lines = dm_reminders.map((elt, idx) => `\`${idx + 1}.\` ${elt.text}`);
+            const question = `Do you want the automated reminders to notify you by DM in addition to the regular ping?
+
+${lines.join('\n')}`;
+            const question_embed = new Discord.MessageEmbed().setTitle('⏰ DM reminders').setDescription(question);
+
+            const filter = filter_number(channel, user_id, 0, dm_reminders.length);
+            const question_msg = await channel.send(question_embed);
+            await channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
+            .then(async reply => {
+                const choice = parseInt(reply.first().content);
+
+                const dm_reminder = dm_reminders[choice - 1];
+                await set_user_dm_reminder(message.client, user_id, dm_reminder.value);
+                const response = dm_reminder.value ? "✅ Whenever a reminder needs to notify you, you'll also receive a DM!" : "You won't receive DM notification for reminders, only ping from channel";
+                await channel.send(response);
             }).catch(timeout_function(channel, user_id));
         }
     }
