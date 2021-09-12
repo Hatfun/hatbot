@@ -431,7 +431,7 @@ module.exports = {
     async execute(message, args) {
         const BUILD = 'build'
 
-        const cache = message.client.getCache('global');
+        const cache = message.client.getCache(message.guild.id);
         const PREFIX = await message.client.getPrefix(message.guild.id);
 
         // Builds = Map(username, Map(build_name -> url))
@@ -440,7 +440,12 @@ module.exports = {
             const user_ids = await get_users();
             for (const user_id of user_ids) {
                 // Only pick users of the guild
-                const member = await message.guild.members.fetch(user_id);
+                // Only pick users of the guild
+                let member = null;
+                try {
+                    member = await message.guild.members.fetch(user_id);
+                } catch(exception) {
+                }
                 if (member == null)
                     continue;
                 const key = `${BUILD}|${user_id}`;

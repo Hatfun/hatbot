@@ -48,6 +48,7 @@ const TIMEZONES = [
         { name: 'Omsk',         flag: ':flag_ru:',  tz: 'Asia/Omsk' },
         { name: 'Jakarta',      flag: ':flag_id:',  tz: 'Asia/Jakarta' },
         { name: 'Kuala Lumpur', flag: ':flag_my:',  tz: 'Asia/Kuala_Lumpur' },
+        { name: 'Ho Chi Minh',  flag: ':flag_vn:',  tz: 'Asia/Ho_Chi_Minh' },
         { name: 'Manila',       flag: ':flag_ph:',  tz: 'Asia/Manila' },
         { name: 'Singapore',    flag: ':flag_sg:',  tz: 'Asia/Singapore' }
     ]},
@@ -449,7 +450,7 @@ function embed_update_char_name_for_user_and_role(embed, user_id, char_names) {
                     const char_name = char_names[char_name_idx];
                     if (line.startsWith(char_name.role)) {
                         lines[i] = line.slice(0, match.index) + ` <@${user_id}> [${Discord.escapeMarkdown(char_name.char_name)}]`;
-                        added_char_names.push(`        ${clean_role(char_name.role)} set to **${Discord.escapeMarkdown(char_name.char_name)}**`);
+                        added_char_names.push(`${clean_role(char_name.role)} set to **${Discord.escapeMarkdown(char_name.char_name)}**`);
                         char_names.splice(char_name_idx, 1);
                         break;
                     }
@@ -796,8 +797,13 @@ Please enter char name for **${clean_role(role.role)}**:`;
         if (channel.id != channel_from.id) {
             await channel.send(`✅ **${embed.title}**: Char name${s} updated!`);
         }
-        await channel_from.send(`📝 **${embed.title}**: Set char name${s} for <@${player_id}>:
-${added_char_names.join('\n')}`);
+        if (added_char_names.length > 1) {
+            await channel_from.send(`📝 **${embed.title}**: <@${player_id}> char names:
+${added_char_names.map(cn => `        ${cn}`).join('\n')}`);
+        } else {
+            await channel_from.send(`📝 **${embed.title}**: <@${player_id}> char name: ${added_char_names[0]}`);
+        }
+
         if (messages_to_delete != null) {
             await bulkDelete(channel_from, messages_to_delete);
         }
@@ -1138,14 +1144,23 @@ async function message_create_new_run(message, guild_cache, name, date_time, tem
         );
     embed_update_number_of_players(embed);
     embed_update_date_time(embed, date_time);
-    const run_message = await channel_to.send(role_ping, [embed]);
+    try {
+        const run_message = await channel_to.send(role_ping, [embed]);
 
-    await message_add_message_to_global_cache(message, run_message, embed);
-    await client_refresh_board(message.client, guild_cache, message.guild.id, channel_to.id);
-    await channel_from.send(`✅ **${name}** Successfully setup new run on <#${channel_to.id}>`);
-    await bulkDelete(message.channel, messages_to_delete);
-    // Don't await here
-    reset_reactions(run_message, embed);
+        await message_add_message_to_global_cache(message, run_message, embed);
+        await client_refresh_board(message.client, guild_cache, message.guild.id, channel_to.id);
+        await channel_from.send(`✅ **${name}** Successfully setup new run on <#${channel_to.id}>`);
+        await bulkDelete(message.channel, messages_to_delete);
+        // Don't await here
+        reset_reactions(run_message, embed);
+    } catch (exception) {
+        if (exception.code == 50013) {
+            await channel_from.send(`❌ Failed to create run. Missing permission to write to <#${channel_to.id}>!`);
+            await bulkDelete(message.channel, messages_to_delete);
+        } else {
+            throw exception;
+        }
+    }
 }
 
 async function message_update_roster(message, msg_id_embed, roster, messages_to_delete) {
@@ -1702,6 +1717,47 @@ function timeout_function(channel, user_id) {
     };
 }
 
+const HELP_DM = `DM commands:
+- list
+- set-dm-reminder
+- set-default-timezone
+`;
+
+function help_dm_commands(message, command) {
+    if (command === 'list') {
+        message_help(message, `DM command: ${config.default_prefix}run list`,
+`**Only works if you DM that command to Hatbot.**
+
+Returns the list of all runs you signed up for across all guilds.
+
+Example:
+\`\`\`${config.default_prefix}run list\`\`\`
+`);
+    } else if (command === 'set-default-timezone') {
+        message_help(message, `DM command: ${config.default_prefix}run set-default-timezone`,
+`**Only works if you DM that command to Hatbot.**
+
+Sets your default timezone, so whenever you react on 🕒 it will displays date and time of the desired timezone.
+
+Example:
+\`\`\`${config.default_prefix}run set-default-timezone\`\`\`
+
+You'll then be asked which timezone should be set as default.
+`);
+    } else if (command === 'set-dm-reminder') {
+        message_help(message, `DM command: ${config.default_prefix}run set-dm-reminder`,
+`**Only works if you DM that command to Hatbot.**
+
+If you turn on DM reminders, then whenever a reminder triggers to ping run participants, you'll receive a DM in addition to being pinged on channel.
+
+Example:
+\`\`\`${config.default_prefix}run set-dm-reminder\`\`\`
+
+You'll then be asked if you want to enable or not DM reminders.
+`);
+    }
+}
+
 module.exports = {
     name: 'run',
     description: 'Utilities for organizing runs',
@@ -1817,6 +1873,7 @@ Admin/Setup:
 
 Organizing party:
 - new
+- end
 - ping
 - note
 - set-roster
@@ -1825,13 +1882,16 @@ Organizing party:
 - add-reminder
 - clear-reminders
 - when
+
+Organizing players:
 - add
+- move
 - remove
 - char
 - change-role
 - swap
-- move
-- end
+
+${HELP_DM}
 \`\`\`
 Type \`${PREFIX}run help COMMAND\` with the command of your choice for more info.`
                 );
@@ -2079,6 +2139,8 @@ You might then be asked to input the following:
 - If the users signed up for multiple roles, which role the player will leave
 - New role
 `);
+            } else {
+                help_dm_commands(message, command);
             }
         } else if (args[0] === 'set-template-channel') {
             if (args[1] == null) {
@@ -2974,6 +3036,15 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
     },
     async executeDM(message, args) {
         if (args == null || args[0] === 'help') {
+            console.log(args);
+            const command = (args != null && args.length > 1) ? args[1] : null;
+            console.log(command);
+            if (command == null) {
+                message_help(message, `${config.default_prefix}run`, `\`\`\`${HELP_DM}\`\`\`
+Type \`${config.default_prefix}run help COMMAND\` with the command of your choice for more info.`);
+            } else {
+                help_dm_commands(message, command);
+            }
         } else if (args[0] === 'list') {
             const user_id = message.author.id;
 
