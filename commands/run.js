@@ -7,6 +7,7 @@ const logger = require('../libs/logger.js');
 const config = require('../config.json');
 
 const GLOBAL_MESSAGE_MAP = 'run_global_message_map';
+const GLOBAL_MENU_MAP = 'run_global_menu_map';
 const CHANNEL_TEMPLATE = 'run_template_channel';
 const CHANNEL_RUN_ARCHIVES = 'run_archives_channel';
 const CHANNEL_RUN_BOARD = 'run_board_channel';
@@ -15,11 +16,14 @@ const ROLE_MENTIONS = 'run_role_mentions';
 const BOARDS = 'run_boards';
 const COLORS = [
     '#E1D733', '#0043E7', '#C403FD', '#FF16BF', '#FFB517', '#1EEBD8', '#AEBDBC', '#ECECEC', '#A6EFFF', '#269E69', '#FFD700', '#228B22',
-    '#00CED1', '#4169E1', '#BC8F8F', '#FAEBD7', '#808080', '#8B008B', '#FA8072', '#FF6347', '#BDB76B', '#7FFF00', '#008080', '#87CEFA'
+    '#00CED1', '#4169E1', '#BC8F8F', '#FAEBD7', '#808080', '#8B008B', '#FA8072', '#FF6347', '#BDB76B', '#7FFF00', '#008080', '#87CEFA',
+    '#FCCF03', '#E64515', '#5FA854', '#5F8DCF', '#9159C9', '#862599', '#91006D', '#A3033B', '#A33003', '#59573A', '#586B46', '#52697D'
 ];
 
 const global_embeds = new Discord.Collection();
 let global_message_map = {};
+const global_menu_embeds = new Discord.Collection();
+let global_menu_message_map = {};
 const user_busy = new Set();
 
 const TIMEOUT_MS = 120000;
@@ -50,7 +54,8 @@ const TIMEZONES = [
         { name: 'Kuala Lumpur', flag: ':flag_my:',  tz: 'Asia/Kuala_Lumpur' },
         { name: 'Ho Chi Minh',  flag: ':flag_vn:',  tz: 'Asia/Ho_Chi_Minh' },
         { name: 'Manila',       flag: ':flag_ph:',  tz: 'Asia/Manila' },
-        { name: 'Singapore',    flag: ':flag_sg:',  tz: 'Asia/Singapore' }
+        { name: 'Singapore',    flag: ':flag_sg:',  tz: 'Asia/Singapore' },
+        { name: 'Seoul',        flag: ':flag_kr:',  tz: 'Asia/Seoul'}
     ]},
     { region: 'Australia', timezones: [
         { name: 'Adelaide',     flag: ':flag_au:',  tz: 'Australia/Adelaide' },
@@ -102,6 +107,10 @@ function get_embed(message_id) {
     return global_embeds.get(message_id);
 }
 
+function get_menu_embed(message_id) {
+    return global_menu_embeds.get(message_id);
+}
+
 function embed_get_channel_from_id(embed) {
     return embed.fields[FIELD_CHANNEL].value.slice(2, -1);
 }
@@ -136,6 +145,10 @@ function embed_update_time_from_now(embed) {
     const date_time = flexible_parse_date(when);
 
     embed.fields[FIELD_WHEN].value = readable_date_from_now(date_time);
+}
+
+function embed_menu_update_current_datetime(embed) {
+    embed.fields[0].value = `**Server Time:\n${moment.tz('Europe/Berlin').format('dddd MMMM Do, HH:mm')}**`;
 }
 
 function embed_update_date_time(embed, date_time) {
@@ -594,6 +607,17 @@ async function set_user_settings(client, user_id, user_settings) {
     await global_cache.set(RUN_USER_SETTINGS + '|' + user_id, user_settings);
 }
 
+async function set_user_money_char(client, user_id, char_name) {
+    const user_settings = await get_user_settings(client, user_id);
+    user_settings.money_char = char_name;
+    await set_user_settings(client, user_id, user_settings);
+}
+
+async function get_user_money_char(client, user_id) {
+    const user_settings = await get_user_settings(client, user_id);
+    return user_settings.money_char;
+}
+
 async function set_user_default_timezone(client, user_id, timezone) {
     const user_settings = await get_user_settings(client, user_id);
     user_settings.timezone = timezone;
@@ -689,7 +713,7 @@ async function update_user_to_roster(client, msg, user_id, emoji_name) {
         msg.edit(embed);
         await channel_from.send(`<:green_plus:880289659933053010> **${embed.title}**: Added <@${user_id}> as ${added}!`);
     } else {
-        await channel_from.send(`❌ **${embed.title}**: Couldn't add <@${user_id}> to roster!`);
+        await channel_from.send(`❌ **${embed.title}**: Sorry <@${user_id}>! All ${emoji_name} spots are taken!`);
     }
 }
 
@@ -742,6 +766,13 @@ function clean_role(role) {
         cleaned = cleaned.slice(0, -1);
     }
     return cleaned;
+}
+
+async function update_menu_current_datetime(client, channel_id, message_id) {
+    const message = await client.discord_cache.getMessage(channel_id, message_id);
+    const embed = global_menu_embeds.get(message_id);
+    embed_menu_update_current_datetime(embed);
+    await message.edit(embed);
 }
 
 async function update_char_name_to_roster_by_message_id(client, message_id, player_id, channel, user, messages_to_delete) {
@@ -871,7 +902,7 @@ async function show_when(client, msg_id, user_id, channel, delete_prompt, messag
     }
 }
 
-async function process_reaction(reaction, user) {
+async function process_run_reaction(reaction, user) {
     if (reaction.emoji.name === '🕒') {
         const dm_channel = await user.createDM(true);
         await show_when(reaction.message.client, reaction.message.id, user.id, dm_channel, false);
@@ -887,18 +918,45 @@ async function process_reaction(reaction, user) {
     await reaction.users.remove(user.id);
 }
 
-async function process_reactions(client, run_message) {
+async function process_menu_reaction(reaction, user) {
+    // TODO: Menu interaction
+    if (reaction.emoji.name === '🗓️') {
+        const dm_channel = await user.createDM(true);
+        await dm_run_list(reaction.message.client, user.id, dm_channel);
+    } else if (reaction.emoji.name === '💰') {
+        const dm_channel = await user.createDM(true);
+        await dm_set_money_char(reaction.message.client, user.id, dm_channel);
+    } else if (reaction.emoji.name === '🗺️') {
+        const dm_channel = await user.createDM(true);
+        await dm_set_default_timezone(reaction.message.client, user.id, dm_channel);
+    } else if (reaction.emoji.name === '⏰') {
+        const dm_channel = await user.createDM(true);
+        await dm_set_dm_reminder(reaction.message.client, user.id, dm_channel);
+    }
+
+    await reaction.users.remove(user.id);
+}
+
+async function common_process_reactions(client, run_message, process_reaction) {
     const message_reactions = run_message.reactions.cache;
     for (const [emoji_name, message_reaction] of message_reactions) {
         const users = await message_reaction.users.fetch();
         // const users = message_reaction.users.cache;
         for (const [user_id, user] of users) {
             if (user_id != client.user.id) {
-                logger.info(`process_reactions: ${user_id} reacted ${message_reaction.emoji.toString()} on msg ${message_reaction.message.id}`);
+                logger.info(`process_run_reactions: ${user_id} reacted ${message_reaction.emoji.toString()} on msg ${message_reaction.message.id}`);
                 await process_reaction(message_reaction, user);
             }
         }
     }
+}
+
+async function process_run_reactions(client, run_message) {
+    await common_process_reactions(client, run_message, process_run_reaction);
+}
+
+async function process_menu_reactions(client, run_message) {
+    await common_process_reactions(client, run_message, process_menu_reaction);
 }
 
 async function delete_run_from_cache(client, message_id) {
@@ -1022,6 +1080,14 @@ async function update_all_runs(client) {
             global_embeds.delete(m.message_id);
         }
         await global_cache.set(GLOBAL_MESSAGE_MAP, global_message_map);
+    }
+
+    for (const guild_id in global_menu_message_map) {
+        for (const channel_id in global_menu_message_map[guild_id]) {
+            for (const message_id of global_menu_message_map[guild_id][channel_id]) {
+                await update_menu_current_datetime(client, channel_id, message_id);
+            }
+        }
     }
 }
 
@@ -1758,51 +1824,191 @@ You'll then be asked if you want to enable or not DM reminders.
     }
 }
 
+async function setup_global_map(client, global_cache, cache_key, embed_map, process_reactions) {
+    let global_map = await global_cache.get(cache_key);
+    if (global_map == null) {
+        global_map = {};
+        await global_cache.set(cache_key, global_map);
+    }
+
+    const messages_to_cleanup = [];
+    for (const guild_id in global_map) {
+        const guild = await client.discord_cache.getGuild(guild_id);
+        for (const channel_id in global_map[guild_id]) {
+            const channel = await client.discord_cache.getChannel(channel_id);
+            for (let message_id_idx in global_map[guild_id][channel_id]) {
+                const message_id = global_map[guild_id][channel_id][message_id_idx];
+                try {
+                    const run_message = await client.discord_cache.getMessage(channel_id, message_id);
+                    embed_map.set(run_message.id, run_message.embeds[0]);
+                    // Process reactions that happened during downtime
+                    // No await here, we don't want to block execution
+                    process_reactions(client, run_message).catch((exception) => logger.error(exception.stack));
+                } catch (exception) {
+                    if (exception.code === 10008) {
+                        // Remove from cache if not found
+                        messages_to_cleanup.push({ guild_id: guild_id, channel_id: channel_id, message_id: message_id });
+                        logger.info(`setup: Message ${guild_id}/${channel_id}/${message_id} not found! Removing from cache`);
+                    } else {
+                        logger.error(exception.stack);
+                    }
+                }
+            }
+        }
+    }
+
+    if (messages_to_cleanup.length > 0) {
+        for (const m of messages_to_cleanup) {
+            const message_id_idx = global_map[m.guild_id][m.channel_id].indexOf(m.message_id);
+            global_map[m.guild_id][m.channel_id].splice(message_id_idx, 1);
+        }
+        await global_cache.set(cache_key, global_map);
+    }
+
+    return global_map;
+}
+
+
+async function dm_run_list(client, user_id, dm_channel) {
+    const runs = [];
+    for (const guild_id in global_message_map) {
+        const guild = await client.discord_cache.getGuild(guild_id);
+        for (const channel_id in global_message_map[guild_id]) {
+            const channel = await client.discord_cache.getChannel(channel_id);
+            for (const message_id of global_message_map[guild_id][channel_id]) {
+                const embed = get_embed(message_id);
+                const players = embed_get_players(embed);
+                if (players.includes(user_id)) {
+                    const full_when = embed.fields[FIELD_WHEN].name;
+                    const when = full_when.substring(SERVER_TIME_PREFIX.length);
+                    const date_time = flexible_parse_date(when);
+
+                    runs.push({ guild_name: guild.name, guild_id: guild_id, channel_id: channel_id, message_id: message_id, embed: embed, date_time: date_time });
+                }
+            }
+        }
+    }
+
+    const content = runs.length == 0 ? 'Nothing happening' : 'You signed up for the following runs:\n\n' + runs
+        .sort((r1, r2) => r1.date_time.valueOf() - r2.date_time.valueOf())
+        .map(r => `• **${r.date_time.format('dddd MMMM Do [@] HH:mm')} -** [${r.embed.title}](https://discord.com/channels/${r.guild_id}/${r.channel_id}/${r.message_id}) (${r.guild_name})`)
+        .join('\n\n');
+
+    const description = `${content}`;
+    const list_embed = new Discord.MessageEmbed().setTitle('🗓️ Run list').setDescription(description);
+    await dm_channel.send(list_embed);
+}
+
+
+async function dm_set_default_timezone(client, user_id, dm_channel) {
+    const tz_array = [];
+    let i = 0;
+    const lines = ['`0. `  No default'];
+    for (const region_tz of TIMEZONES) {
+        lines.push(`\n**${region_tz.region}**`)
+        for (const tz of region_tz.timezones) {
+            i++;
+            lines.push(`\`${(i + '.').padEnd(3)}\`  ${tz.flag} ${tz.name}`);
+            tz_array.push(tz);
+        }
+    }
+
+    const question = `Please choose your default timezone by entering a number between 0 and ${tz_array.length}:
+
+${lines.join('\n')}`;
+    const question_embed = new Discord.MessageEmbed().setTitle('🕒 Select timezone').setDescription(question);
+
+    const filter = filter_number(dm_channel, user_id, 0, tz_array.length);
+    const question_msg = await dm_channel.send(question_embed);
+    await dm_channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
+    .then(async reply => {
+        const choice = parseInt(reply.first().content);
+        if (choice == 0) {
+            await forget_user_default_timezone(client, user_id);
+            await dm_channel.send(`✅ Next time you'll react 🕒 to get time of a run, you'll be asked for which timezone!`);
+        } else {
+            const timezone = tz_array[choice - 1];
+            await set_user_default_timezone(client, user_id, timezone);
+            await dm_channel.send(`${timezone.flag} Whenever you'll react 🕒 to get time of a run, it will displayed as **${timezone.name} time**!`);
+        }
+    }).catch(timeout_function(dm_channel, user_id));
+}
+
+async function dm_set_money_char(client, user_id, dm_channel, money_char) {
+    if (money_char != null) {
+        await set_user_money_char(client, user_id, money_char);
+        await dm_channel.send(`✅ Money char set to **${Discord.escapeMarkdown(money_char)}**!`);
+    } else {
+        const question = `Please enter the name of your money character:`;
+        const question_embed = new Discord.MessageEmbed().setTitle('💰 Money char').setDescription(question);
+
+        const question_message = await dm_channel.send(question_embed);
+        const filter = m => m.author.id == user_id;
+        await dm_channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
+        .then(async reply => {
+            const char_name = reply.first().content;
+            await set_user_money_char(client, user_id, char_name);
+            await dm_channel.send(`✅ Money char set to **${Discord.escapeMarkdown(char_name)}**!`);
+        })
+        .catch(async exception => {
+            if (exception instanceof Error) {
+                throw exception;
+            } else {
+                await dm_channel.send(`❌ ${user.id == null ? '' : '<@' + user.id +'> '}Command timed out! 🐢`);
+            }
+        });
+    }
+}
+
+async function dm_set_dm_reminder(client, user_id, dm_channel) {
+    const dm_reminders = [{ text: 'Yes', value: true }, { text: 'No', value: false }]
+    const lines = dm_reminders.map((elt, idx) => `\`${idx + 1}.\` ${elt.text}`);
+    const question = `Do you want the automated reminders to notify you by DM in addition to the regular ping?
+
+${lines.join('\n')}`;
+    const question_embed = new Discord.MessageEmbed().setTitle('⏰ DM reminders').setDescription(question);
+
+    const filter = filter_number(dm_channel, user_id, 0, dm_reminders.length);
+    const question_msg = await dm_channel.send(question_embed);
+    await dm_channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
+    .then(async reply => {
+        const choice = parseInt(reply.first().content);
+
+        const dm_reminder = dm_reminders[choice - 1];
+        await set_user_dm_reminder(client, user_id, dm_reminder.value);
+        const response = dm_reminder.value ? "✅ Whenever a reminder needs to notify you, you'll also receive a DM!" : "You won't receive DM notification for reminders, only ping from channel";
+        await dm_channel.send(response);
+    }).catch(timeout_function(dm_channel, user_id));
+}
+
+async function show_money_chars(client, channel, user_ids, hide_not_found, title) {
+    const money_chars = [];
+    for (const user_id of user_ids) {
+        let money_char = await get_user_money_char(client, user_id);
+        if (money_char == null && hide_not_found)
+            continue;
+        if (money_char == null) {
+            money_char = '-';
+        }
+        money_chars.push({user_id: user_id, money_char: money_char});
+    }
+    const description = money_chars.map(mc => `<@${mc.user_id}>: ${Discord.escapeMarkdown(mc.money_char)}`).join('\n');
+
+    const embed_title = title == null ? '💰 Money characters' : `💰 Money characters from ${title}`;
+    const mc_embed = new Discord.MessageEmbed()
+        .setTitle(embed_title)
+        .setDescription(description);
+    await channel.send(mc_embed);
+}
+
 module.exports = {
     name: 'run',
     description: 'Utilities for organizing runs',
     async setup(client) {
         const global_cache = client.getCache('global');
-        global_message_map = await global_cache.get(GLOBAL_MESSAGE_MAP);
-        if (global_message_map == null) {
-            global_message_map = {};
-            await global_cache.set(GLOBAL_MESSAGE_MAP, global_message_map);
-        }
 
-        const messages_to_cleanup = [];
-        for (const guild_id in global_message_map) {
-            const guild = await client.discord_cache.getGuild(guild_id);
-            for (const channel_id in global_message_map[guild_id]) {
-                const channel = await client.discord_cache.getChannel(channel_id);
-                for (let message_id_idx in global_message_map[guild_id][channel_id]) {
-                    const message_id = global_message_map[guild_id][channel_id][message_id_idx];
-                    try {
-                        const run_message = await client.discord_cache.getMessage(channel_id, message_id);
-                        global_embeds.set(run_message.id, run_message.embeds[0]);
-                        // Process reactions that happened during downtime
-                        // No await here, we don't want to block execution
-                        process_reactions(client, run_message).catch((exception) => logger.error(exception.stack));
-                    } catch (exception) {
-                        if (exception.code === 10008) {
-                            // Remove from cache if not found
-                            messages_to_cleanup.push({ guild_id: guild_id, channel_id: channel_id, message_id: message_id });
-                            logger.info(`setup: Message ${guild_id}/${channel_id}/${message_id} not found! Removing from cache`);
-                        } else {
-                            logger.error(exception.stack);
-                        }
-                    }
-                }
-            }
-        }
-
-        if (messages_to_cleanup.length > 0) {
-            for (const m of messages_to_cleanup) {
-                const message_id_idx = global_message_map[m.guild_id][m.channel_id].indexOf(m.message_id);
-                global_message_map[m.guild_id][m.channel_id].splice(message_id_idx, 1);
-            }
-            await global_cache.set(GLOBAL_MESSAGE_MAP, global_message_map);
-        }
-
+        global_message_map = await setup_global_map(client, global_cache, GLOBAL_MESSAGE_MAP, global_embeds, process_run_reactions);
+        global_menu_message_map = await setup_global_map(client, global_cache, GLOBAL_MENU_MAP, global_menu_embeds, process_menu_reactions);
         // refresh board after global_embed is set
         for (const guild_id in global_message_map) {
             const guild_cache = client.getCache(guild_id);
@@ -1811,21 +2017,39 @@ module.exports = {
             }
         }
 
-        setInterval(async function() {
-            await update_all_runs(client);
-        }, 60000);
+        for (const guild_id in global_menu_message_map) {
+            for (const channel_id in global_menu_message_map[guild_id]) {
+                for (const message_id of global_menu_message_map[guild_id][channel_id]) {
+                    await update_menu_current_datetime(client, channel_id, message_id);
+                }
+            }
+        }
+
+        setTimeout(async function() {
+            update_all_runs(client);
+            setInterval(async function() {
+                await update_all_runs(client);
+            }, 60000);
+        }, 60000 - (Date.now() % 60000));
     },
     async onReaction(reaction, user) {
         if (user.bot) { return; }
         if (global_embeds.has(reaction.message.id)) {
             if (reaction.message.partial) await reaction.message.fetch();
             if (reaction.partial) await reaction.fetch();
-            logger.info(`onReaction: ${user.id} reacted ${reaction.emoji.toString()} on msg ${reaction.message.id}`);
+            logger.info(`onReaction (run): ${user.id} reacted ${reaction.emoji.toString()} on msg ${reaction.message.id}`);
 
-            await process_reaction(reaction, user);
+            await process_run_reaction(reaction, user);
+        } else if (global_menu_embeds.has(reaction.message.id)) {
+            if (reaction.message.partial) await reaction.message.fetch();
+            if (reaction.partial) await reaction.fetch();
+            logger.info(`onReaction (menu): ${user.id} reacted ${reaction.emoji.toString()} on msg ${reaction.message.id}`);
+
+            await process_menu_reaction(reaction, user);
         }
     },
     async onMessageDelete(message) {
+        const global_cache = message.client.getCache('global');
         for (const guild_id in global_message_map) {
             for (const channel_id in global_message_map[guild_id]) {
                 const message_id_idx = global_message_map[guild_id][channel_id].indexOf(message.id);
@@ -1843,7 +2067,20 @@ module.exports = {
                     await channel_archives.send(embed);
                     global_embeds.delete(message.id);
                     await client_refresh_board(message.client, message.client.getCache(guild_id), guild_id, channel_id);
+                    await global_cache.set(GLOBAL_MESSAGE_MAP, global_message_map);
                     await channel_from.send(`✅ **${embed.title}** is over. Roster message has been archived!`);
+                }
+            }
+        }
+
+        for (const guild_id in global_menu_message_map) {
+            for (const channel_id in global_menu_message_map[message.guild.id]) {
+                const message_id_idx = global_menu_message_map[guild_id][channel_id].indexOf(message.id);
+                if (message_id_idx >= 0) {
+                    logger.info(`onMessageDelete: Deleting menu message ${message.id} from global_menu_message_map[${guild_id}][${channel_id}] and global_menu_embeds`);
+                    global_menu_message_map[guild_id][channel_id].splice(message_id_idx, 1);
+                    global_menu_embeds.delete(message.id);
+                    await global_cache.set(GLOBAL_MENU_MAP, global_menu_message_map);
                 }
             }
         }
@@ -1882,6 +2119,8 @@ Organizing party:
 - add-reminder
 - clear-reminders
 - when
+- money-chars | mc
+- all-money-chars | mclist
 
 Organizing players:
 - add
@@ -2138,6 +2377,27 @@ You might then be asked to input the following:
 - If your channel is linked to multiple rosters, which one to move player
 - If the users signed up for multiple roles, which role the player will leave
 - New role
+`);
+            } else if (command === 'money-chars' || command === 'mc') {
+                message_help(message, `${PREFIX}run mc`,
+`List money chars.
+
+There are 3 different usages:
+1) \`${PREFIX}run mc\`
+To list the money chars for a run linked to the channel this command is run.
+
+2) \`${PREFIX}run mc MESSAGE_ID\`
+To list the money chars from an active run or from an archived run by message id.
+Example: \`\`\`${PREFIX}run mc 903849681984057354\`\`\`
+
+3) \`${PREFIX}run mc @user1 @user2 ...\`
+To list the money chars by user ids.
+Example: \`\`\`${PREFIX}run mc @Hatfun @Arduinna\`\`\`
+`);
+            } else if (command === 'all-money-chars' || command === 'mclist') {
+                message_help(message, `${PREFIX}run mc`,
+`List ALL money chars from the Discord server.
+Example: \`\`\`${PREFIX}run mclist\`\`\`
 `);
             } else {
                 help_dm_commands(message, command);
@@ -2490,7 +2750,7 @@ Examples:
             }
             const reminder_minutes = parse_reminder(reminder_str);
             if (reminder_minutes == null) {
-                await message.channel.send(`❌ **${embed.title}**: Invalid reminder ${reminder_str}!
+                await message.channel.send(`❌ Invalid reminder ${reminder_str}!
 Supported format: \`[NUMBER days] [NUMBER hours] [NUMBER minutes] before\`
 Examples:
 - \`2 days before\`
@@ -3032,6 +3292,118 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                     });
                 });
             }
+        } else if (args[0] === 'setup-menu') {
+            if (global_menu_message_map[message.guild.id] != null) {
+                for (const channel_id in global_menu_message_map[message.guild.id]) {
+                    for (const message_id of global_menu_message_map[message.guild.id][channel_id]) {
+                        const embed = get_menu_embed(message_id);
+                        if (embed != null) {
+                            await message.channel.send(`❌ Menu already set up in <#${channel_id}>!`);
+                            return;
+                        }
+                    }
+                }
+            }
+            let match;
+            if (args[1] == null || (match = /<#(\d+)>/.exec(args[1])) == null) {
+                await message.channel.send(`❌ Please provide a channel to setup menu. Usage: \`${PREFIX}run setup-menu #channel\``);
+                return;
+            }
+            const channel_id = match[1];
+
+            const channel_menu = await message_get_channel_by_id(message, channel_id);
+            const global_cache = message.client.getCache('global');
+
+            const menus = [
+                { emoji: '🗓️', name: '🗓️ My runs'},
+                { emoji: '💰', name: '💰 Set money char'},
+                { emoji: '🗺️', name: '🗺️ My default timezone'},
+                { emoji: '⏰', name: '⏰ Direct Message reminders'}
+            ];
+            const description = menus.map(m => m.name).join('\n\n');
+            const menu_embed = new Discord.MessageEmbed()
+                .setTitle('Hatbot Menu')
+                .setDescription(description)
+                .addField('\u200B', `**Server Time:\n${moment.tz('Europe/Berlin').format('dddd MMMM Do, HH:mm')}**`);
+            const menu_message = await channel_menu.send(menu_embed);
+            if (!(message.guild.id in global_menu_message_map)) {
+                global_menu_message_map[message.guild.id] = {};
+            }
+            if (!(channel_id in global_menu_message_map[message.guild.id])) {
+                global_menu_message_map[message.guild.id][channel_id] = {};
+            }
+            global_menu_message_map[message.guild.id][channel_id] = [menu_message.id];
+            global_menu_embeds.set(menu_message.id, menu_embed);
+            await global_cache.set(GLOBAL_MENU_MAP, global_menu_message_map);
+            await message.channel.send(`✅ Menu successfully added on channel <#${channel_id}>!`);
+            for (const menu of menus) {
+                await menu_message.react(menu.emoji);
+            }
+        } else if (args[0] === 'money-chars' || args[0] === 'mc') {
+            let match = null;
+            let embed = null;
+            let title = null;
+            const user_ids = [];
+            if (args[1] == null) {
+                const msg_id_embeds = get_embeds_linked_to_channel(message.channel.id);
+                if (msg_id_embeds.length == 0) {
+                    await message.channel.send('❌ There\'s no run linked to this channel to display money chars!');
+                } else if (msg_id_embeds.length == 1) {
+                    const msg_id_embed = msg_id_embeds[0];
+                    embed = msg_id_embed.embed;
+                } else {
+                    const questionRun = `📄 Please choose a run to display money chars:
+
+${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n')}`;
+                    const questionRunEmbed = new Discord.MessageEmbed().setTitle('Money chars').setDescription(questionRun);
+                    const messages_to_delete = [];
+                    const filter = filter_number(message.channel, message.author.id, 1, msg_id_embeds.length, messages_to_delete);
+                    const choose_run_message = await message.channel.send(questionRunEmbed);
+                    messages_to_delete.push(choose_run_message);
+                    const replies = await message.channel.awaitMessages(filter, { max: 1 });
+                    const reply = replies.first();
+                    const run_idx = parseInt(reply.content.trim());
+                    const msg_id_embed = msg_id_embeds[run_idx - 1];
+                    embed = msg_id_embed.embed;
+                    await bulkDelete(message.channel, messages_to_delete);
+                }
+            } else if ((match = /^\d+$/.exec(args[1])) != null) {
+                const message_id = args[1];
+                const channel_archives = await client_get_channel(message.client, guild_cache, CHANNEL_RUN_ARCHIVES);
+                try {
+                    const run_message = await message.client.discord_cache.getMessage(channel_archives.id, message_id);
+                    embed = run_message.embeds[0];
+                } catch (exception) {
+                    if (exception.code === 10008) {
+                        await message.channel.send(`❌ Cannot find message with id ${message_id} in archives channel <#${channel_archives.id}>!`);
+                    } else {
+                        throw exception;
+                    }
+                    return;
+                }
+            } else if ((match = /^(<@[!]?\d+>\s*)+$/.exec(args[1])) != null) {
+                const regex_user = /<@[!]?(\d+)>/g;
+                while ((match = regex_user.exec(args[1])) != null) {
+                    user_ids.push(match[1]);
+                }
+            }
+            if (embed != null) {
+                title = embed.title;
+                user_ids.push(...embed_get_players(embed));
+            }
+            if (user_ids.length > 0) {
+                await show_money_chars(message.client, message.channel, user_ids, false, title);
+            } else {
+                await message.channel.send(`❌ Couldn't find any player to display money char!`);
+            }
+        } else if (args[0] === 'all-money-chars' || args[0] === 'mclist') {
+            const guild = await message.client.discord_cache.getGuild(message.guild.id);
+            await guild.roles.fetch();
+            const guild_members = await guild.members.fetch({withPresences: true, force: true});
+            const user_ids = guild_members
+                .sort((g1, g2) => g1.user.username.localeCompare(g2.user.username))
+                .map(g => g.id);
+            await show_money_chars(message.client, message.channel, user_ids, true);
         }
     },
     async executeDM(message, args) {
@@ -3046,91 +3418,13 @@ Type \`${config.default_prefix}run help COMMAND\` with the command of your choic
                 help_dm_commands(message, command);
             }
         } else if (args[0] === 'list') {
-            const user_id = message.author.id;
-
-            const client = message.client;
-            const runs = [];
-            for (const guild_id in global_message_map) {
-                const guild = await client.discord_cache.getGuild(guild_id);
-                for (const channel_id in global_message_map[guild_id]) {
-                    const channel = await client.discord_cache.getChannel(channel_id);
-                    for (const message_id of global_message_map[guild_id][channel_id]) {
-                        const embed = get_embed(message_id);
-                        const players = embed_get_players(embed);
-                        if (players.includes(user_id)) {
-                            const full_when = embed.fields[FIELD_WHEN].name;
-                            const when = full_when.substring(SERVER_TIME_PREFIX.length);
-                            const date_time = flexible_parse_date(when);
-
-                            runs.push({ guild_name: guild.name, guild_id: guild_id, channel_id: channel_id, message_id: message_id, embed: embed, date_time: date_time });
-                        }
-                    }
-                }
-            }
-
-            const content = runs.length == 0 ? 'Nothing happening' : 'You signed up for the following runs:\n\n' + runs
-                .sort((r1, r2) => r1.date_time.valueOf() - r2.date_time.valueOf())
-                .map(r => `• **${r.date_time.format('dddd MMMM Do [@] HH:mm')} -** [${r.embed.title}](https://discord.com/channels/${r.guild_id}/${r.channel_id}/${r.message_id}) (${r.guild_name})`)
-                .join('\n\n');
-
-            const description = `${content}`;
-            const list_embed = new Discord.MessageEmbed().setTitle('🗓️ Run list').setDescription(description);
-            await message.channel.send(list_embed);
+            await dm_run_list(message.client, message.author.id, message.channel);
         } else if (args[0] === 'set-default-timezone') {
-            const channel = message.channel;
-            const user_id = message.author.id;
-            const tz_array = [];
-            let i = 0;
-            const lines = ['`0. `  No default'];
-            for (const region_tz of TIMEZONES) {
-                lines.push(`\n**${region_tz.region}**`)
-                for (const tz of region_tz.timezones) {
-                    i++;
-                    lines.push(`\`${(i + '.').padEnd(3)}\`  ${tz.flag} ${tz.name}`);
-                    tz_array.push(tz);
-                }
-            }
-
-            const question = `Please choose your default timezone by entering a number between 0 and ${tz_array.length}:
-
-${lines.join('\n')}`;
-            const question_embed = new Discord.MessageEmbed().setTitle('🕒 Select timezone').setDescription(question);
-
-            const filter = filter_number(channel, user_id, 0, tz_array.length);
-            const question_msg = await channel.send(question_embed);
-            await channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
-            .then(async reply => {
-                const choice = parseInt(reply.first().content);
-                if (choice == 0) {
-                    await forget_user_default_timezone(message.client, user_id);
-                    await channel.send(`✅ Next time you'll react 🕒 to get time of a run, you'll be asked for which timezone!`);
-                } else {
-                    const timezone = tz_array[choice - 1];
-                    await set_user_default_timezone(message.client, user_id, timezone);
-                    await channel.send(`${timezone.flag} Whenever you'll react 🕒 to get time of a run, it will displayed as **${timezone.name} time**!`);
-                }
-            }).catch(timeout_function(channel, user_id));
+            await dm_set_default_timezone(message.client, message.author.id, message.channel);
         } else if (args[0] === 'set-dm-reminder') {
-            const channel = message.channel;
-            const user_id = message.author.id;
-            const dm_reminders = [{ text: 'Yes', value: true }, { text: 'No', value: false }]
-            const lines = dm_reminders.map((elt, idx) => `\`${idx + 1}.\` ${elt.text}`);
-            const question = `Do you want the automated reminders to notify you by DM in addition to the regular ping?
-
-${lines.join('\n')}`;
-            const question_embed = new Discord.MessageEmbed().setTitle('⏰ DM reminders').setDescription(question);
-
-            const filter = filter_number(channel, user_id, 0, dm_reminders.length);
-            const question_msg = await channel.send(question_embed);
-            await channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
-            .then(async reply => {
-                const choice = parseInt(reply.first().content);
-
-                const dm_reminder = dm_reminders[choice - 1];
-                await set_user_dm_reminder(message.client, user_id, dm_reminder.value);
-                const response = dm_reminder.value ? "✅ Whenever a reminder needs to notify you, you'll also receive a DM!" : "You won't receive DM notification for reminders, only ping from channel";
-                await channel.send(response);
-            }).catch(timeout_function(channel, user_id));
+            await dm_set_dm_reminder(message.client, message.author.id, message.channel);
+        } else if (args[0] === 'set-money-char') {
+            await dm_set_money_char(message.client, message.author.id, message.channel, args[1]);
         }
     }
 }
