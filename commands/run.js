@@ -39,6 +39,7 @@ const TIMEZONES = [
         { name: 'Denver',       flag: ':flag_us:',  tz: 'America/Denver' },
         { name: 'Chicago',      flag: ':flag_us:',  tz: 'America/Chicago' },
         { name: 'New York',     flag: ':flag_us:',  tz: 'America/New_York' },
+        { name: 'Bogota'  ,     flag: ':flag_co:',  tz: 'America/Bogota' },
         { name: 'São Paulo',    flag: ':flag_br:',  tz: 'America/Sao_Paulo' }
     ]},
     { region: 'Europe', timezones: [
@@ -2107,6 +2108,7 @@ Admin/Setup:
 - remove-board
 - add-role-mention
 - remove-role-mention
+- setup-menu
 
 Organizing party:
 - new
@@ -2398,6 +2400,12 @@ Example: \`\`\`${PREFIX}run mc @Hatfun @Arduinna\`\`\`
                 message_help(message, `${PREFIX}run mc`,
 `List ALL money chars from the Discord server.
 Example: \`\`\`${PREFIX}run mclist\`\`\`
+`);
+            } else if (command === 'setup-menu') {
+                message_help(message, `${PREFIX}run setup-menu #channel`,
+`Creates a menu on #channel.
+Only one menu can exist at a time in a Discord server. So if you need to recreate it somewhere else, delete the previous menu message before.
+Example: \`\`\`${PREFIX}run setup-menu #run-board\`\`\`
 `);
             } else {
                 help_dm_commands(message, command);
@@ -3086,7 +3094,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
             }
             let match = null;
             if (args[1] == null || (match = /^<#(\d+)>$/.exec(args[1])) == null) {
-                await message.channel.send(`❌ Usage: \`${PREFIX}run add-board <#channel>\``);
+                await message.channel.send(`❌ Usage: \`${PREFIX}run remove-board <#channel>\``);
                 return;
             }
             const channel_id = match[1];
