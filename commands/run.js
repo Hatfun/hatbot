@@ -12,6 +12,7 @@ const CHANNEL_TEMPLATE = 'run_template_channel';
 const CHANNEL_RUN_ARCHIVES = 'run_archives_channel';
 const CHANNEL_RUN_BOARD = 'run_board_channel';
 const RUN_USER_SETTINGS = 'run_user_settings';
+const RUN_SERVER_TIMEZONE = 'run_server_timezone';
 const ROLE_MENTIONS = 'run_role_mentions';
 const BOARDS = 'run_boards';
 const COLORS = [
@@ -39,7 +40,7 @@ const TIMEZONES = [
         { name: 'Denver',       flag: ':flag_us:',  tz: 'America/Denver' },
         { name: 'Chicago',      flag: ':flag_us:',  tz: 'America/Chicago' },
         { name: 'New York',     flag: ':flag_us:',  tz: 'America/New_York' },
-        { name: 'Bogota'  ,     flag: ':flag_co:',  tz: 'America/Bogota' },
+        { name: 'Bogotá'  ,     flag: ':flag_co:',  tz: 'America/Bogota' },
         { name: 'São Paulo',    flag: ':flag_br:',  tz: 'America/Sao_Paulo' }
     ]},
     { region: 'Europe', timezones: [
@@ -88,15 +89,18 @@ const OLD_STYLE_RUN_DATE_FORMAT = 'dddd MMMM Do [@] h:mm A';
 const RUN_DATE_FORMAT = 'dddd MMMM Do[\n]HH:mm[ Server Time]';
 // const OLD_STYLE_RUN_DATE_FORMAT = 'dddd MMMM Do[\n]HH:mm[ Server Time]';
 // const RUN_DATE_FORMAT = 'dddd MMMM Do [@] h:mm A';
-function flexible_parse_date(date_str) {
+function flexible_parse_date(date_str, server_timezone) {
+    if (server_timezone == null) {
+        throw new Error("Missing server timezone!");
+    }
     // Old style
-    let date_time = moment.tz(date_str, OLD_STYLE_RUN_DATE_FORMAT, true, 'Europe/Berlin');
+    let date_time = moment.tz(date_str, OLD_STYLE_RUN_DATE_FORMAT, true, server_timezone);
     if (!date_time.isValid()) {
         // New style. moment() always assumes it's for current year.
-        date_time = moment.tz(date_str, RUN_DATE_FORMAT, true, 'Europe/Berlin');
+        date_time = moment.tz(date_str, RUN_DATE_FORMAT, true, server_timezone);
         // Try to parse next year, assuming that day of the week is NEVER the same on year n + 1
         if (!date_time.isValid()) {
-            date_time = moment.tz((moment().year() + 1) + " " + date_str, RUN_DATE_FORMAT, true, 'Europe/Berlin');
+            date_time = moment.tz((moment().year() + 1) + " " + date_str, RUN_DATE_FORMAT, true, server_timezone);
             if (!date_time.isValid())
                 return null;
         }
@@ -140,32 +144,32 @@ function embed_update_roster(embed, roster) {
     embed.setDescription(lines.join('\n'));
 }
 
-function embed_update_time_from_now(embed) {
+function embed_update_time_from_now(embed, server_timezone) {
     const full_when = embed.fields[FIELD_WHEN].name;
     const when = full_when.substring(SERVER_TIME_PREFIX.length);
-    const date_time = flexible_parse_date(when);
+    const date_time = flexible_parse_date(when, server_timezone);
 
     embed.fields[FIELD_WHEN].value = readable_date_from_now(date_time);
 }
 
-function embed_menu_update_current_datetime(embed) {
-    embed.fields[0].value = `**Server Time:\n${moment.tz('Europe/Berlin').format('dddd MMMM Do, HH:mm')}**`;
+function embed_menu_update_current_datetime(embed, server_timezone) {
+    embed.fields[0].value = `**Server Time:\n${moment.tz(server_timezone).format('dddd MMMM Do, HH:mm')}**`;
 }
 
-function embed_update_date_time(embed, date_time) {
+function embed_update_date_time(embed, date_time, server_timezone) {
     // Old style
     // const when = `${SERVER_TIME_PREFIX}${date_time.format('MMMM Do YYYY h:mm A')}`;
     // New style
     const when = `${SERVER_TIME_PREFIX}${date_time.format(RUN_DATE_FORMAT)}`;
     embed.fields[FIELD_WHEN].name = when;
 
-    embed_update_time_from_now(embed);
+    embed_update_time_from_now(embed, server_timezone);
 }
 
-function embed_is_update_time_from_now_needed(embed) {
+function embed_is_update_time_from_now_needed(embed, server_timezone) {
     const full_when = embed.fields[FIELD_WHEN].name;
     const when = full_when.substring(SERVER_TIME_PREFIX.length);
-    const date_time = flexible_parse_date(when);
+    const date_time = flexible_parse_date(when, server_timezone);
 
     const duration = moment.duration(date_time.diff(moment().subtract(1, 'minutes')));
 
@@ -233,11 +237,11 @@ function embed_update_run_name(embed, run_name) {
     embed.title = run_name;
 }
 
-function embed_add_reminder(embed, reminder_minutes) {
+function embed_add_reminder(embed, reminder_minutes, server_timezone) {
     const readable = reminder_to_readable(reminder_minutes);
     const full_when = embed.fields[FIELD_WHEN].name;
     const when = full_when.substring(SERVER_TIME_PREFIX.length);
-    const date_time = flexible_parse_date(when);
+    const date_time = flexible_parse_date(when, server_timezone);
 
     let reminder_idx = embed_find_field_index_by_name(embed, 'Reminders');
     if (reminder_idx == -1) {
@@ -597,10 +601,19 @@ function embed_move_role(embed, user_id, old_role, new_role_emoji) {
 
 }
 
+async function get_server_timezone(guild_cache) {
+    const server_timezone = await guild_cache.get(RUN_SERVER_TIMEZONE);
+    return server_timezone == null ? 'Europe/Berlin' : server_timezone;
+}
+
+async function set_server_timezone(guild_cache, server_timezone) {
+    await guild_cache.set(RUN_SERVER_TIMEZONE, server_timezone);
+}
+
 async function get_user_settings(client, user_id) {
     const global_cache = client.getCache('global');
     const user_settings = await global_cache.get(RUN_USER_SETTINGS + '|' + user_id);
-    return user_settings != null ? user_settings : {};
+    return user_settings == null ? {} : user_settings;
 }
 
 async function set_user_settings(client, user_id, user_settings) {
@@ -702,7 +715,7 @@ function parse_reminder(reminder_str) {
     return minutes;
 }
 
-async function update_user_to_roster(client, msg, user_id, emoji_name) {
+async function update_user_to_roster(client, msg, user_id, emoji_name, server_timezone) {
     const embed = get_embed(msg.id);
 
     const added = embed_update_user_to_roster(embed, user_id, emoji_name);
@@ -710,7 +723,7 @@ async function update_user_to_roster(client, msg, user_id, emoji_name) {
     const channel_from = await get_embed_channel_from(client, embed);
     if (added) {
         embed_update_number_of_players(embed);
-        embed_update_time_from_now(embed);
+        embed_update_time_from_now(embed, server_timezone);
         msg.edit(embed);
         await channel_from.send(`<:green_plus:880289659933053010> **${embed.title}**: Added <@${user_id}> as ${added}!`);
     } else {
@@ -718,14 +731,14 @@ async function update_user_to_roster(client, msg, user_id, emoji_name) {
     }
 }
 
-async function remove_user_from_roster(client, msg, user_id, emoji_name) {
+async function remove_user_from_roster(client, msg, user_id, emoji_name, server_timezone) {
     const embed = get_embed(msg.id);
 
     const removed = embed_update_user_to_roster(embed, user_id, emoji_name);
     const channel_from = await get_embed_channel_from(client, embed);
     if (removed) {
         embed_update_number_of_players(embed);
-        embed_update_time_from_now(embed);
+        embed_update_time_from_now(embed, server_timezone);
         msg.edit(embed);
         await channel_from.send(`<:red_minus:880289746272792607> **${embed.title}**: Removed <@${user_id}>!`);
     }
@@ -769,21 +782,21 @@ function clean_role(role) {
     return cleaned;
 }
 
-async function update_menu_current_datetime(client, channel_id, message_id) {
+async function update_menu_current_datetime(client, channel_id, message_id, server_timezone) {
     const message = await client.discord_cache.getMessage(channel_id, message_id);
     const embed = global_menu_embeds.get(message_id);
-    embed_menu_update_current_datetime(embed);
+    embed_menu_update_current_datetime(embed, server_timezone);
     await message.edit(embed);
 }
 
-async function update_char_name_to_roster_by_message_id(client, message_id, player_id, channel, user, messages_to_delete) {
+async function update_char_name_to_roster_by_message_id(client, message_id, player_id, channel, user, messages_to_delete, server_timezone) {
     const embed = get_embed(message_id);
     const channel_id = embed_get_channel_from_id(embed);
     const message = await client.discord_cache.getMessage(channel_id, message_id);
-    await update_char_name_to_roster(client, message, player_id, channel, user, messages_to_delete);
+    await update_char_name_to_roster(client, message, player_id, channel, user, messages_to_delete, server_timezone);
 }
 
-async function update_char_name_to_roster(client, msg, player_id, channel, user, messages_to_delete) {
+async function update_char_name_to_roster(client, msg, player_id, channel, user, messages_to_delete, server_timezone) {
     const embed = get_embed(msg.id);
     const roles = embed_get_roles_for_user(embed, player_id);
 
@@ -823,7 +836,7 @@ Please enter char name for **${clean_role(role.role)}**:`;
 
     if (added_char_names.length > 0) {
         const s = added_char_names.length > 1 ? 's' : '';
-        embed_update_time_from_now(embed);
+        embed_update_time_from_now(embed, server_timezone);
         await msg.edit(embed);
         const channel_from = await get_embed_channel_from(client, embed);
         if (channel.id != channel_from.id) {
@@ -858,11 +871,11 @@ async function core_show_when(date_time, timezone, embed, channel, delete_prompt
     }
 }
 
-async function show_when(client, msg_id, user_id, channel, delete_prompt, messages_to_delete, extra_footer) {
+async function show_when(client, msg_id, user_id, channel, delete_prompt, messages_to_delete, server_timezone) {
     const embed = get_embed(msg_id);
     const full_when = embed.fields[FIELD_WHEN].name;
     const when = full_when.substring(SERVER_TIME_PREFIX.length);
-    const date_time = flexible_parse_date(when);
+    const date_time = flexible_parse_date(when, server_timezone);
 
     let timezone = await get_user_default_timezone(client, user_id);
     // Only doing that for DM, on which there's no delete_prompt
@@ -904,16 +917,20 @@ async function show_when(client, msg_id, user_id, channel, delete_prompt, messag
 }
 
 async function process_run_reaction(reaction, user) {
+    const guild_id = reaction.message.guild.id;
+    const guild_cache = reaction.message.client.getCache(guild_id);
+    const server_timezone = await get_server_timezone(guild_cache);
+
     if (reaction.emoji.name === '🕒') {
         const dm_channel = await user.createDM(true);
-        await show_when(reaction.message.client, reaction.message.id, user.id, dm_channel, false);
+        await show_when(reaction.message.client, reaction.message.id, user.id, dm_channel, false, [], server_timezone);
     } else if (reaction.emoji.name === '📝') {
         const dm_channel = await user.createDM(true);
-        await update_char_name_to_roster(reaction.message.client, reaction.message, user.id, dm_channel, user);
+        await update_char_name_to_roster(reaction.message.client, reaction.message, user.id, dm_channel, user, server_timezone);
     } else if (reaction.emoji.name === '❌') {
-        await remove_user_from_roster(reaction.message.client, reaction.message, user.id, reaction.emoji.name);
+        await remove_user_from_roster(reaction.message.client, reaction.message, user.id, reaction.emoji.name, server_timezone);
     } else {
-        await update_user_to_roster(reaction.message.client, reaction.message, user.id, reaction.emoji.toString());
+        await update_user_to_roster(reaction.message.client, reaction.message, user.id, reaction.emoji.toString(), server_timezone);
     }
 
     await reaction.users.remove(user.id);
@@ -980,7 +997,7 @@ async function delete_run_from_cache(client, message_id) {
     return false;
 }
 
-async function check_and_update_reminders(client, embed) {
+async function check_and_update_reminders(client, embed, server_timezone) {
     let edit_message = false;
     let reminder_idx = embed_find_field_index_by_name(embed, 'Reminders');
     if (reminder_idx == -1) {
@@ -995,9 +1012,9 @@ async function check_and_update_reminders(client, embed) {
     const reminder_minutes = parse_reminder(line.substring(2));
     const full_when = embed.fields[FIELD_WHEN].name;
     const when = full_when.substring(SERVER_TIME_PREFIX.length);
-    const date_time = flexible_parse_date(when).subtract(reminder_minutes, 'm');
+    const date_time = flexible_parse_date(when, server_timezone).subtract(reminder_minutes, 'm');
     if (date_time.isBefore(moment())) {
-        embed_update_time_from_now(embed);
+        embed_update_time_from_now(embed, server_timezone);
         lines.splice(0, 1);
         if (lines.length == 0) {
             embed_clear_reminder(embed);
@@ -1009,7 +1026,7 @@ async function check_and_update_reminders(client, embed) {
         const players = embed_get_players(embed);
         if (players.length > 0) {
             const channel_from = await get_embed_channel_from(client, embed);
-            const when_str = flexible_parse_date(when).format('dddd MMMM Do [@] HH:mm[ Server Time]');
+            const when_str = flexible_parse_date(when, server_timezone).format('dddd MMMM Do [@] HH:mm[ Server Time]');
             const reminder_message = `This is an automated reminder that **${embed.title}** will happen on **${when_str}** (${embed.fields[FIELD_WHEN].value})`
             const content = `⏰ **${embed.title}**
 ${players.map(p => `<@${p}>`).join(' ')}
@@ -1038,6 +1055,8 @@ async function update_all_runs(client) {
     const messages_to_cleanup = [];
     for (const guild_id in global_message_map) {
         const guild = await client.discord_cache.getGuild(guild_id);
+        const guild_cache = client.getCache(guild_id);
+        const server_timezone = await get_server_timezone(guild_cache);
         for (const channel_id in global_message_map[guild_id]) {
             const channel = await client.discord_cache.getChannel(channel_id);
             for (let message_id_idx in global_message_map[guild_id][channel_id]) {
@@ -1048,13 +1067,13 @@ async function update_all_runs(client) {
 
                     let edit_message = false;
                     // Update time from now
-                    if (embed_is_update_time_from_now_needed(embed)) {
-                        embed_update_time_from_now(embed);
+                    if (embed_is_update_time_from_now_needed(embed, server_timezone)) {
+                        embed_update_time_from_now(embed, server_timezone);
                         edit_message = true;
                     }
 
                     // Check for reminders
-                    if (await check_and_update_reminders(client, embed)) {
+                    if (await check_and_update_reminders(client, embed, server_timezone)) {
                         edit_message = true;
                     }
 
@@ -1084,9 +1103,11 @@ async function update_all_runs(client) {
     }
 
     for (const guild_id in global_menu_message_map) {
+        const guild_cache = client.getCache(guild_id);
+        const server_timezone = await get_server_timezone(guild_cache);
         for (const channel_id in global_menu_message_map[guild_id]) {
             for (const message_id of global_menu_message_map[guild_id][channel_id]) {
-                await update_menu_current_datetime(client, channel_id, message_id);
+                await update_menu_current_datetime(client, channel_id, message_id, server_timezone);
             }
         }
     }
@@ -1196,7 +1217,7 @@ async function message_add_message_to_global_cache(message, run_message, embed) 
     global_embeds.set(run_message.id, embed);
 }
 
-async function message_create_new_run(message, guild_cache, name, date_time, template, channel_from, channel_to, role_ping, messages_to_delete) {
+async function message_create_new_run(message, guild_cache, name, date_time, template, channel_from, channel_to, role_ping, messages_to_delete, server_timezone) {
     const embed = new Discord.MessageEmbed()
         .setColor(color(name))
         .setTitle(name)
@@ -1210,7 +1231,7 @@ async function message_create_new_run(message, guild_cache, name, date_time, tem
 🕒 = When | 📝 = Char name | ❌ = Remove` },
         );
     embed_update_number_of_players(embed);
-    embed_update_date_time(embed, date_time);
+    embed_update_date_time(embed, date_time, server_timezone);
     try {
         const run_message = await channel_to.send(role_ping, [embed]);
 
@@ -1230,7 +1251,7 @@ async function message_create_new_run(message, guild_cache, name, date_time, tem
     }
 }
 
-async function message_update_roster(message, msg_id_embed, roster, messages_to_delete) {
+async function message_update_roster(message, msg_id_embed, roster, messages_to_delete, message_remove_player, server_timezone) {
     if (roster != null) {
         const embed = msg_id_embed.embed;
         const distinct_roles_before = Array.from(embed_get_distinct_roles(embed));
@@ -1238,7 +1259,7 @@ async function message_update_roster(message, msg_id_embed, roster, messages_to_
         const distinct_roles_after = Array.from(embed_get_distinct_roles(embed));
         embed_update_number_of_players(embed);
         const run_msg = await get_message_by_id_from_global_map(message.client, msg_id_embed.message_id);
-        embed_update_time_from_now(embed);
+        embed_update_time_from_now(embed, server_timezone);
         await run_msg.edit(embed);
 
         // Confirmation before working with reactions
@@ -1250,10 +1271,10 @@ async function message_update_roster(message, msg_id_embed, roster, messages_to_
     }
 }
 
-async function message_update_datetime(message, guild_cache, msg_id_embed, date_time) {
+async function message_update_datetime(message, guild_cache, msg_id_embed, date_time, server_timezone) {
     if (date_time != null) {
         const embed = msg_id_embed.embed;
-        embed_update_date_time(embed, date_time);
+        embed_update_date_time(embed, date_time, server_timezone);
         const run_msg = await get_message_by_id_from_global_map(message.client, msg_id_embed.message_id);
         await run_msg.edit(embed);
 
@@ -1263,20 +1284,20 @@ async function message_update_datetime(message, guild_cache, msg_id_embed, date_
     }
 }
 
-async function message_update_note(message, msg_id_embed, note) {
+async function message_update_note(message, msg_id_embed, note, server_timezone) {
     if (note == null)
         note = '\u200B';
     const embed = msg_id_embed.embed;
     embed_update_note(embed, note);
     const run_msg = await get_message_by_id_from_global_map(message.client, msg_id_embed.message_id);
-    embed_update_time_from_now(embed);
+    embed_update_time_from_now(embed, server_timezone);
     await run_msg.edit(embed);
 
     const channel_from = await get_embed_channel_from(message.client, embed);
     await channel_from.send(`✅ **${embed.title}**: Note updated!`);
 }
 
-async function message_update_run_name(message, guild_cache, msg_id_embed, run_name) {
+async function message_update_run_name(message, guild_cache, msg_id_embed, run_name, server_timezone) {
     const embed = msg_id_embed.embed;
     const run_msg = await get_message_by_id_from_global_map(message.client, msg_id_embed.message_id);
     for (const msg_id of global_message_map[message.guild.id][run_msg.channel.id]) {
@@ -1286,7 +1307,7 @@ async function message_update_run_name(message, guild_cache, msg_id_embed, run_n
         }
     }
     embed_update_run_name(embed, run_name);
-    embed_update_time_from_now(embed);
+    embed_update_time_from_now(embed, server_timezone);
     await run_msg.edit(embed);
 
     await client_refresh_board(message.client, guild_cache, message.guild.id, run_msg.channel.id);
@@ -1294,22 +1315,22 @@ async function message_update_run_name(message, guild_cache, msg_id_embed, run_n
     await channel_from.send(`✅ **${embed.title}**: Title updated!`);
 }
 
-async function message_add_reminder(message, msg_id_embed, reminder_minutes) {
+async function message_add_reminder(message, msg_id_embed, reminder_minutes, server_timezone) {
     const embed = msg_id_embed.embed;
-    embed_add_reminder(embed, reminder_minutes);
+    embed_add_reminder(embed, reminder_minutes, server_timezone);
     const run_msg = await get_message_by_id_from_global_map(message.client, msg_id_embed.message_id);
-    embed_update_time_from_now(embed);
+    embed_update_time_from_now(embed, server_timezone);
     await run_msg.edit(embed);
 
     await message.channel.send(`✅ **${embed.title}**: Reminder updated!`);
 }
 
-async function message_clear_reminders(message, msg_id_embed) {
+async function message_clear_reminders(message, msg_id_embed, server_timezone) {
     const embed = msg_id_embed.embed;
 
     embed_clear_reminder(embed);
     const run_msg = await get_message_by_id_from_global_map(message.client, msg_id_embed.message_id);
-    embed_update_time_from_now(embed);
+    embed_update_time_from_now(embed, server_timezone);
     await run_msg.edit(embed);
 
     await message.channel.send(`✅ **${embed.title}**: Reminders cleared!`);
@@ -1347,7 +1368,7 @@ async function message_end_run(message, guild_cache, msg_id_embed) {
     // await channel_from.send(`✅ **${embed.title}** is over. Roster message has been archived!`);
 }
 
-async function message_add_player(message, msg_id_embed, player_user_id, messages_to_delete) {
+async function message_add_player(message, msg_id_embed, player_user_id, messages_to_delete, server_timezone) {
     if (player_user_id != null) {
         const embed = msg_id_embed.embed;
         const emojis = Array.from(embed_get_distinct_available_emojis(embed));
@@ -1373,17 +1394,17 @@ ${emojis.map((elt, idx) => `\`${idx + 1}.\`    ${elt}`).join('\n')}
                 const emoji_name = emojis[emoji_idx - 1];
 
                 const run_msg = await get_message_by_id_from_global_map(message.client, msg_id_embed.message_id);
-                await update_user_to_roster(message.client, run_msg, player_user_id, emoji_name);
+                await update_user_to_roster(message.client, run_msg, player_user_id, emoji_name, server_timezone);
                 await bulkDelete(message.channel, messages_to_delete);
             });
         });
     }
 }
 
-async function message_remove_player(message, msg_id_embed, player_user_id) {
+async function message_remove_player(message, msg_id_embed, player_user_id, server_timezone) {
     if (player_user_id != null) {
         const run_msg = await get_message_by_id_from_global_map(message.client, msg_id_embed.message_id);
-        await remove_user_from_roster(message.client, run_msg, player_user_id, '❌');
+        await remove_user_from_roster(message.client, run_msg, player_user_id, '❌', server_timezone);
     }
 }
 
@@ -1620,6 +1641,7 @@ async function set_boards(guild_cache, boards) {
 }
 
 async function client_refresh_board(client, guild_cache, guild_id, channel_id) {
+    const server_timezone = await get_server_timezone(guild_cache);
     const global_cache = client.getCache('global');
     const boards = await get_boards(guild_cache);
     if (!(channel_id in boards))
@@ -1643,7 +1665,7 @@ async function client_refresh_board(client, guild_cache, guild_id, channel_id) {
 
             const full_when = embed_from_message.fields[FIELD_WHEN].name;
             const when = full_when.substring(SERVER_TIME_PREFIX.length);
-            const date_time = flexible_parse_date(when);
+            const date_time = flexible_parse_date(when, server_timezone);
 
             runs.push({message_id: message_id, name: embed_title, date_time: date_time});
         }
@@ -1691,7 +1713,10 @@ function filter_number(channel, author_id, min_value, max_value, messages_to_del
     };
 }
 
-function filter_date(channel, author_id, messages_to_delete) {
+function filter_date(channel, author_id, messages_to_delete, server_timezone) {
+    if (server_timezone == null) {
+        throw new Error("Missing server timezone!");
+    }
     return async m => {
         try {
             if (m.author.id != author_id) {
@@ -1703,7 +1728,7 @@ function filter_date(channel, author_id, messages_to_delete) {
             }
 
             const date_time_str = m.content.trim();
-            const date_time = moment.tz(date_time_str, "YYYY-MM-DD HH:mm", true, "Europe/Berlin");
+            const date_time = moment.tz(date_time_str, "YYYY-MM-DD HH:mm", true, server_timezone);
             if (!date_time.isValid()) {
                 const message_invalid = await channel.send('❌ Invalid date! Example of accepted format: \`2021-08-25 15:30\`');
                 if (messages_to_delete != null) {
@@ -1711,7 +1736,7 @@ function filter_date(channel, author_id, messages_to_delete) {
                 }
                 return false;
             }
-            const year_diff = date_time.year() - moment.tz("Europe/Berlin").year();
+            const year_diff = date_time.year() - moment.tz(server_timezone).year();
             if (year_diff < 0 || year_diff > 1) {
                 const message_invalid = await channel.send('❌ Year must be either the current year, or next year!');
                 if (messages_to_delete != null) {
@@ -1874,6 +1899,8 @@ async function dm_run_list(client, user_id, dm_channel) {
     const runs = [];
     for (const guild_id in global_message_map) {
         const guild = await client.discord_cache.getGuild(guild_id);
+        const guild_cache = client.getCache(guild_id);
+        const server_timezone = await get_server_timezone(guild_cache);
         for (const channel_id in global_message_map[guild_id]) {
             const channel = await client.discord_cache.getChannel(channel_id);
             for (const message_id of global_message_map[guild_id][channel_id]) {
@@ -1882,7 +1909,7 @@ async function dm_run_list(client, user_id, dm_channel) {
                 if (players.includes(user_id)) {
                     const full_when = embed.fields[FIELD_WHEN].name;
                     const when = full_when.substring(SERVER_TIME_PREFIX.length);
-                    const date_time = flexible_parse_date(when);
+                    const date_time = flexible_parse_date(when, server_timezone);
 
                     runs.push({ guild_name: guild.name, guild_id: guild_id, channel_id: channel_id, message_id: message_id, embed: embed, date_time: date_time });
                 }
@@ -2019,9 +2046,12 @@ module.exports = {
         }
 
         for (const guild_id in global_menu_message_map) {
+            const guild_cache = client.getCache(guild_id);
+            const server_timezone = await get_server_timezone(guild_cache);
+            logger.info(`Server timezone of ${guild_id}: ${server_timezone}`);
             for (const channel_id in global_menu_message_map[guild_id]) {
                 for (const message_id of global_menu_message_map[guild_id][channel_id]) {
-                    await update_menu_current_datetime(client, channel_id, message_id);
+                    await update_menu_current_datetime(client, channel_id, message_id, server_timezone);
                 }
             }
         }
@@ -2090,6 +2120,7 @@ module.exports = {
         const PREFIX = await message.client.getPrefix(message.guild.id);
 
         const guild_cache = message.client.getCache(message.guild.id);
+        const server_timezone = await get_server_timezone(guild_cache);
 
         if (args == null || args[0] === 'help') {
             const command = (args != null && args.length > 1) ? args[1] : null;
@@ -2394,17 +2425,20 @@ Example: \`\`\`${PREFIX}run mc 903849681984057354\`\`\`
 
 3) \`${PREFIX}run mc @user1 @user2 ...\`
 To list the money chars by user ids.
+
 Example: \`\`\`${PREFIX}run mc @Hatfun @Arduinna\`\`\`
 `);
             } else if (command === 'all-money-chars' || command === 'mclist') {
                 message_help(message, `${PREFIX}run mc`,
 `List ALL money chars from the Discord server.
+
 Example: \`\`\`${PREFIX}run mclist\`\`\`
 `);
             } else if (command === 'setup-menu') {
                 message_help(message, `${PREFIX}run setup-menu #channel`,
 `Creates a menu on #channel.
 Only one menu can exist at a time in a Discord server. So if you need to recreate it somewhere else, delete the previous menu message before.
+
 Example: \`\`\`${PREFIX}run setup-menu #run-board\`\`\`
 `);
             } else {
@@ -2513,14 +2547,14 @@ ${templates.map((elt, idx) => `\`${idx + 1}.\` ${elt.title}`).join('\n')}
                     const template = templates[parseInt(c1.first().content) - 1];
                     const questionDateTime = `🕒 When is **${run_name}** going to happen Server Time?\n(YYYY-MM-DD HH:mm)`;
                     const questionDateTimeEmbed = new Discord.MessageEmbed().setTitle('Date & Time').setDescription(questionDateTime);
-                    const date_filter = filter_date(message.channel, message.author.id, messages_to_delete);
+                    const date_filter = filter_date(message.channel, message.author.id, messages_to_delete, server_timezone);
                     await message.channel.send(questionDateTimeEmbed)
                     .then(async input_date_message => {
                         messages_to_delete.push(input_date_message);
                         await message.channel.awaitMessages(date_filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
                         .then(async c2 => {
                             const date_time_str = c2.first().content;
-                            const date_time = moment.tz(date_time_str, "YYYY-MM-DD HH:mm", true, "Europe/Berlin");
+                            const date_time = moment.tz(date_time_str, "YYYY-MM-DD HH:mm", true, server_timezone);
 
                             const global_cache = message.client.getCache('global');
                             const choice_channels = [];
@@ -2582,7 +2616,7 @@ ${templates.map((elt, idx) => `\`${idx + 1}.\` ${elt.title}`).join('\n')}
                                         .then(async c4 => {
                                             const role_idx = parseInt(c4.first().content);
                                             const role_ping = role_idx == 0 ? '' : role_pings[role_idx];
-                                            await message_create_new_run(message, guild_cache, run_name, date_time, template, message.channel, channel_to, role_ping, messages_to_delete);
+                                            await message_create_new_run(message, guild_cache, run_name, date_time, template, message.channel, channel_to, role_ping, messages_to_delete, server_timezone);
                                         }).catch(timeout_function(message.channel, message.author.id));
                                     });
                                 }).catch(timeout_function(message.channel, message.author.id));
@@ -2604,7 +2638,7 @@ ${templates.map((elt, idx) => `\`${idx + 1}.\` ${elt.title}`).join('\n')}
                 await message.channel.send('❌ There\'s no run linked to this channel to set roster!');
             } else if (msg_id_embeds.length == 1) {
                 const msg_id_embed = msg_id_embeds[0];
-                await message_update_roster(message, msg_id_embed, roster, []);
+                await message_update_roster(message, msg_id_embed, roster, [], server_timezone);
             } else {
                 const questionRun =
 `📄 Please choose a run to apply this roster:
@@ -2623,7 +2657,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
-                        await message_update_roster(message, msg_id_embed, roster, messages_to_delete);
+                        await message_update_roster(message, msg_id_embed, roster, messages_to_delete, server_timezone);
                     });
                 });
             }
@@ -2666,8 +2700,11 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 });
             }
         } else if (args[0] === 'set-datetime') {
+            if (server_timezone == null) {
+                throw new Error("Missing server timezone!");
+            }
             const date_time_str = args[1];
-            const date_time = moment.tz(date_time_str, "YYYY-MM-DD HH:mm", true, "Europe/Berlin");
+            const date_time = moment.tz(date_time_str, "YYYY-MM-DD HH:mm", true, server_timezone);
             if (!date_time.isValid()) {
                 await message.channel.send('❌ Invalid date! Example of accepted format: \`2021-08-25 15:30\`');
                 return;
@@ -2679,7 +2716,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send('❌ There\'s no run linked to this channel to set the date and time!');
             } else if (msg_id_embeds.length == 1) {
                 const msg_id_embed = msg_id_embeds[0];
-                await message_update_datetime(message, guild_cache, msg_id_embed, date_time);
+                await message_update_datetime(message, guild_cache, msg_id_embed, date_time, server_timezone);
             } else {
                 const questionRun =
 `📄 Please choose a run to apply this date and time:
@@ -2698,7 +2735,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
-                        await message_update_datetime(message, guild_cache, msg_id_embed, date_time);
+                        await message_update_datetime(message, guild_cache, msg_id_embed, date_time, server_timezone);
                         await bulkDelete(message.channel, messages_to_delete);
                     });
                 });
@@ -2717,7 +2754,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send('❌ There\'s no run linked to this channel to set note!');
             } else if (msg_id_embeds.length == 1) {
                 const msg_id_embed = msg_id_embeds[0];
-                await message_update_note(message, msg_id_embed, note);
+                await message_update_note(message, msg_id_embed, note, server_timezone);
             } else {
                 const questionRun =
 `📄 Please choose a run to apply this note:
@@ -2736,7 +2773,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
-                        await message_update_note(message, msg_id_embed, note);
+                        await message_update_note(message, msg_id_embed, note, server_timezone);
                         await bulkDelete(message.channel, messages_to_delete);
                     });
                 });
@@ -2778,7 +2815,7 @@ Examples:
                 await message.channel.send('❌ There\'s no run linked to this channel to add reminder!');
             } else if (msg_id_embeds.length == 1) {
                 const msg_id_embed = msg_id_embeds[0];
-                await message_add_reminder(message, msg_id_embed, reminder_minutes);
+                await message_add_reminder(message, msg_id_embed, reminder_minutes, server_timezone);
             } else {
                 const questionRun =
 `📄 Please choose a run to apply this reminder:
@@ -2797,7 +2834,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
-                        await message_add_reminder(message, msg_id_embed, reminder_minutes);
+                        await message_add_reminder(message, msg_id_embed, reminder_minutes, server_timezone);
                         await bulkDelete(message.channel, messages_to_delete);
                     });
                 });
@@ -2842,7 +2879,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send('❌ There\'s no run linked to this channel to clear reminders!');
             } else if (msg_id_embeds.length == 1) {
                 const msg_id_embed = msg_id_embeds[0];
-                await message_clear_reminders(message, msg_id_embed);
+                await message_clear_reminders(message, msg_id_embed, server_timezone);
             } else {
                 const questionRun =
 `📄 Please choose a run to clear reminders:
@@ -2861,7 +2898,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
-                        await message_clear_reminders(message, msg_id_embed);
+                        await message_clear_reminders(message, msg_id_embed, server_timezone);
                         await bulkDelete(message.channel, messages_to_delete);
                     });
                 });
@@ -2880,7 +2917,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send('❌ There\'s no run linked to this channel to add player!');
             } else if (msg_id_embeds.length == 1) {
                 const msg_id_embed = msg_id_embeds[0];
-                await message_add_player(message, msg_id_embed, player_user_id, []);
+                await message_add_player(message, msg_id_embed, player_user_id, [], server_timezone);
             } else {
                 const questionRun =
 `📄 Please choose a run to add this player:
@@ -2899,7 +2936,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
-                        await message_add_player(message, msg_id_embed, player_user_id, messages_to_delete);
+                        await message_add_player(message, msg_id_embed, player_user_id, messages_to_delete, server_timezone);
                     });
                 });
             }
@@ -2917,7 +2954,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send('❌ There\'s no run linked to this channel to remove player!');
             } else if (msg_id_embeds.length == 1) {
                 const msg_id_embed = msg_id_embeds[0];
-                await message_remove_player(message, msg_id_embed, player_user_id);
+                await message_remove_player(message, msg_id_embed, player_user_id, server_timezone);
             } else {
                 const questionRun =
 `📄 Please choose a run to remove this player:
@@ -2936,7 +2973,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
-                        await message_remove_player(message, msg_id_embed, player_user_id);
+                        await message_remove_player(message, msg_id_embed, player_user_id, server_timezone);
                         await bulkDelete(message.channel, messages_to_delete);
                     });
                 });
@@ -2949,7 +2986,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send('❌ There\'s no run linked to this channel to display date and time!');
             } else if (msg_id_embeds.length == 1) {
                 const msg_id_embed = msg_id_embeds[0];
-                await show_when(message.client, msg_id_embed.message_id, message.author.id, message.channel, true, []);
+                await show_when(message.client, msg_id_embed.message_id, message.author.id, message.channel, true, [], server_timezone);
             } else {
                 const questionRun =
 `📄 Please choose a run to display date and time:
@@ -2968,7 +3005,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
-                        await show_when(message.client, msg_id_embed.message_id, message.author.id, message.channel, true, messages_to_delete);
+                        await show_when(message.client, msg_id_embed.message_id, message.author.id, message.channel, true, messages_to_delete, server_timezone);
                     });
                 });
             }
@@ -3009,7 +3046,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send('❌ There\'s no run linked to this channel to set player char name!');
             } else if (msg_id_embeds.length == 1) {
                 const msg_id_embed = msg_id_embeds[0];
-                await update_char_name_to_roster_by_message_id(message.client, msg_id_embed.message_id, player_user_id, message.channel, message.author, []);
+                await update_char_name_to_roster_by_message_id(message.client, msg_id_embed.message_id, player_user_id, message.channel, message.author, [], server_timezone);
             } else {
                 const questionRun =
 `📄 Please choose a run to set this player's char name:
@@ -3028,12 +3065,12 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
-                        await update_char_name_to_roster_by_message_id(message.client, msg_id_embed.message_id, player_user_id, message.channel, message.author, messages_to_delete);
+                        await update_char_name_to_roster_by_message_id(message.client, msg_id_embed.message_id, player_user_id, message.channel, message.author, messages_to_delete, server_timezone);
                     });
                 });
             }
         } else if (args[0] === 'add-board') {
-            if (!message_validate_board_channel(message, guild_cache, PREFIX)) {
+            if (!await message_validate_board_channel(message, guild_cache, PREFIX)) {
                 return;
             }
             let match = null;
@@ -3069,7 +3106,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
 
                     const full_when = embed_from_message.fields[FIELD_WHEN].name;
                     const when = full_when.substring(SERVER_TIME_PREFIX.length);
-                    const date_time = flexible_parse_date(when);
+                    const date_time = flexible_parse_date(when, server_timezone);
 
                     runs.push({message_id: message_id, name: embed_title, date_time: date_time});
                 }
@@ -3089,7 +3126,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
             await set_boards(guild_cache, boards);
             await message.channel.send(`✅ Board has been successfully set up for <#${channel_id}>!`);
         } else if (args[0] === 'remove-board') {
-            if (!message_validate_board_channel(message, guild_cache, PREFIX)) {
+            if (!await message_validate_board_channel(message, guild_cache, PREFIX)) {
                 return;
             }
             let match = null;
@@ -3301,6 +3338,9 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 });
             }
         } else if (args[0] === 'setup-menu') {
+            if (server_timezone == null) {
+                throw new Error("Missing server timezone!");
+            }
             if (global_menu_message_map[message.guild.id] != null) {
                 for (const channel_id in global_menu_message_map[message.guild.id]) {
                     for (const message_id of global_menu_message_map[message.guild.id][channel_id]) {
@@ -3332,7 +3372,7 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
             const menu_embed = new Discord.MessageEmbed()
                 .setTitle('Hatbot Menu')
                 .setDescription(description)
-                .addField('\u200B', `**Server Time:\n${moment.tz('Europe/Berlin').format('dddd MMMM Do, HH:mm')}**`);
+                .addField('\u200B', `**Server Time:\n${moment.tz(server_timezone).format('dddd MMMM Do, HH:mm')}**`);
             const menu_message = await channel_menu.send(menu_embed);
             if (!(message.guild.id in global_menu_message_map)) {
                 global_menu_message_map[message.guild.id] = {};
@@ -3412,13 +3452,40 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 .sort((g1, g2) => g1.user.username.localeCompare(g2.user.username))
                 .map(g => g.id);
             await show_money_chars(message.client, message.channel, user_ids, true);
+        } else if (args[0] === 'set-server-timezone') {
+            const tz_array = [];
+            const lines = [];
+            let i = 0;
+            for (const region_tz of TIMEZONES) {
+                lines.push(`\n**${region_tz.region}**`)
+                for (const tz of region_tz.timezones) {
+                    i++;
+                    lines.push(`\`${(i + '.').padEnd(3)}\`  ${tz.flag} ${tz.name}`);
+                    tz_array.push(tz);
+                }
+            }
+
+            const question = `Please choose your **server** timezone by entering a number between 1 and ${tz_array.length}:
+
+${lines.join('\n')}`;
+            const question_embed = new Discord.MessageEmbed().setTitle('🕒 Select server timezone').setDescription(question);
+            const messages_to_delete = [];
+            const filter = filter_number(message.channel, message.author.id, 1, tz_array.length, messages_to_delete);
+            const question_msg = await message.channel.send(question_embed);
+            messages_to_delete.push(question_msg);
+            await message.channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
+            .then(async reply => {
+                const choice = parseInt(reply.first().content);
+                const timezone = tz_array[choice - 1];
+                await set_server_timezone(guild_cache, timezone.tz);
+                await message.channel.send(`${timezone.flag} Server timezone set to **${timezone.name}**!`);
+                await bulkDelete(message.channel, messages_to_delete);
+            }).catch(timeout_function(message.channel, message.author.id));
         }
     },
     async executeDM(message, args) {
         if (args == null || args[0] === 'help') {
-            console.log(args);
             const command = (args != null && args.length > 1) ? args[1] : null;
-            console.log(command);
             if (command == null) {
                 message_help(message, `${config.default_prefix}run`, `\`\`\`${HELP_DM}\`\`\`
 Type \`${config.default_prefix}run help COMMAND\` with the command of your choice for more info.`);
