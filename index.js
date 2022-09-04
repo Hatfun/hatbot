@@ -105,6 +105,12 @@ class MyDiscordCache {
             logger.info(`Message ${message_id} has been deleted. Removed from cache.`);
         }
     }
+
+    async deleteChannelFromCache(channel_id) {
+        if (this.channel_cache.delete(channel_id)) {
+            logger.info(`Channel ${channel_id} has been deleted. Removed from cache.`);
+        }
+    }
 }
 
 const client = new Discord.Client({
@@ -266,6 +272,19 @@ client.on('messageDelete', async message => {
         if (command.onMessageDelete != null) {
             try {
                 await command.onMessageDelete(message);
+            } catch (exception) {
+                logger.error(exception.stack);
+            }
+        }
+    }
+});
+
+client.on('channelDelete', async channel => {
+    client.discord_cache.deleteChannelFromCache(channel.id);
+    for (const [command_name, command] of client.commands) {
+        if (command.onChannelDelete != null) {
+            try {
+                await command.onChannelDelete(channel);
             } catch (exception) {
                 logger.error(exception.stack);
             }

@@ -1655,6 +1655,53 @@ async function set_boards(guild_cache, boards) {
     await guild_cache.set(BOARDS, boards);
 }
 
+async function client_cleanup_board(client, guild_cache) {
+    if (await guild_cache.get(CHANNEL_RUN_BOARD) == null)
+        return;
+    const boards = await get_boards(guild_cache);
+    const channel_board = await client_get_channel(client, guild_cache, CHANNEL_RUN_BOARD);
+    const boards_to_delete = [];
+    for (const channel_id in boards) {
+        try {
+            const channel = await client.discord_cache.getChannel(channel_id);
+        } catch (exception) {
+            console.log(exception.code);
+            if (exception.code === 10003) {
+                logger.info(`Deleting board ${channel_id}: channel doesn't exist`);
+
+                try {
+                    const message_id = boards[channel_id];
+                    const message = await client.discord_cache.getMessage(channel_board.id, message_id);
+                    await message.delete();
+                    await client.discord_cache.deleteMessageFromCache(message_id);
+                    logger.info(`Deleted board message ${channel_board.id}:${message_id}`);
+                } catch (e2) {
+                    logger.error(e2.stack);
+                }
+            } else {
+                logger.error(exception.stack);
+            }
+        }
+
+        try {
+            const message_id = boards[channel_id];
+            const message = await client.discord_cache.getMessage(channel_board.id, message_id);
+        } catch (exception) {
+            if (exception.code === 10008) {
+                boards_to_delete.push(channel_id);
+                logger.info(`Deleting board ${channel_id}: Board message doesn't exist`);
+            } else {
+                logger.error(exception);
+            }
+        }
+    }
+    for (const board_to_delete of boards_to_delete) {
+        console.log(`Board to delete: ${board_to_delete}`);
+        delete boards[board_to_delete];
+    }
+    await set_boards(guild_cache, boards);
+}
+
 async function client_refresh_board(client, guild_cache, guild_id, channel_id) {
     const server_timezone = await get_server_timezone(guild_cache);
     const global_cache = client.getCache('global');
@@ -1685,6 +1732,8 @@ async function client_refresh_board(client, guild_cache, guild_id, channel_id) {
             runs.push({message_id: message_id, name: embed_title, date_time: date_time});
         }
     }
+
+    console.log(runs);
 
    const content = runs.length == 0 ? 'Nothing happening' : runs
         .sort((r1, r2) => r1.date_time.valueOf() - r2.date_time.valueOf())
@@ -1872,32 +1921,43 @@ async function setup_global_map(client, global_cache, cache_key, embed_map, proc
         await global_cache.set(cache_key, global_map);
     }
     console.log(global_map);
-    delete global_map['345268237484818443']['964183255089815602'];
-    await global_cache.set(cache_key, global_map);
-    console.log(global_map);
+    // delete global_map['345268237484818443']['964183255089815602'];
+    // await global_cache.set(cache_key, global_map);
+    // console.log(global_map);
 
     const messages_to_cleanup = [];
+    const channels_to_cleanup = [];
     for (const guild_id in global_map) {
         const guild = await client.discord_cache.getGuild(guild_id);
         for (const channel_id in global_map[guild_id]) {
             console.log(guild_id + ' | ' + channel_id);
-            const channel = await client.discord_cache.getChannel(channel_id);
-            for (let message_id_idx in global_map[guild_id][channel_id]) {
-                const message_id = global_map[guild_id][channel_id][message_id_idx];
-                try {
-                    const run_message = await client.discord_cache.getMessage(channel_id, message_id);
-                    embed_map.set(run_message.id, run_message.embeds[0]);
-                    // Process reactions that happened during downtime
-                    // No await here, we don't want to block execution
-                    process_reactions(client, run_message).catch((exception) => logger.error(exception.stack));
-                } catch (exception) {
-                    if (exception.code === 10008) {
-                        // Remove from cache if not found
-                        messages_to_cleanup.push({ guild_id: guild_id, channel_id: channel_id, message_id: message_id });
-                        logger.info(`setup: Message ${guild_id}/${channel_id}/${message_id} not found! Removing from cache`);
-                    } else {
-                        logger.error(exception.stack);
+            try {
+                const channel = await client.discord_cache.getChannel(channel_id);
+                for (let message_id_idx in global_map[guild_id][channel_id]) {
+                    const message_id = global_map[guild_id][channel_id][message_id_idx];
+                    try {
+                        const run_message = await client.discord_cache.getMessage(channel_id, message_id);
+                        embed_map.set(run_message.id, run_message.embeds[0]);
+                        // Process reactions that happened during downtime
+                        // No await here, we don't want to block execution
+                        process_reactions(client, run_message).catch((exception) => logger.error(exception.stack));
+                    } catch (exception) {
+                        if (exception.code === 10008) {
+                            // Remove from cache if not found
+                            messages_to_cleanup.push({ guild_id: guild_id, channel_id: channel_id, message_id: message_id });
+                            logger.info(`setup: Message ${guild_id}/${channel_id}/${message_id} not found! Removing from cache`);
+                        } else {
+                            logger.error(exception.stack);
+                        }
                     }
+                }
+            } catch (exception_channel) {
+                if (exception_channel.code === 10003) {
+                    // Remove from cache if not found
+                    channels_to_cleanup.push({ guild_id: guild_id, channel_id: channel_id });
+                    logger.info(`Channel ${channel_id} deleted. Removing from cache`);
+                } else {
+                    logger.error(exception_channel.stack);
                 }
             }
         }
@@ -1907,6 +1967,12 @@ async function setup_global_map(client, global_cache, cache_key, embed_map, proc
         for (const m of messages_to_cleanup) {
             const message_id_idx = global_map[m.guild_id][m.channel_id].indexOf(m.message_id);
             global_map[m.guild_id][m.channel_id].splice(message_id_idx, 1);
+        }
+        await global_cache.set(cache_key, global_map);
+    }
+    if (channels_to_cleanup.length > 0) {
+        for (const c of channels_to_cleanup) {
+            delete global_map[c.guild_id][c.channel_id];
         }
         await global_cache.set(cache_key, global_map);
     }
@@ -2060,6 +2126,8 @@ module.exports = {
         // refresh board after global_embed is set
         for (const guild_id in global_message_map) {
             const guild_cache = client.getCache(guild_id);
+            console.log('client_cleanup_board');
+            await client_cleanup_board(client, guild_cache);
             for (const channel_id in global_message_map[guild_id]) {
                 await client_refresh_board(client, guild_cache, guild_id, channel_id);
             }
@@ -2135,6 +2203,67 @@ module.exports = {
                 }
             }
         }
+    },
+    async onChannelDelete(channel) {
+        console.log(channel);
+        console.log('global_message_map:');
+        console.log(global_message_map);
+        console.log('global_menu_message_map:');
+        console.log(global_menu_message_map);
+
+        const global_cache = message.client.getCache('global');
+        const guild_cache = channel.client.getCache(channel.guild.id);
+        await client_cleanup_board(channel.client, guild_cache);
+
+        if (channel.guild.id in global_message_map && channel.id in global_message_map[channel.guild.id]) {
+            console.log(`Deleting channel ${channel.guild.id}:${channel.id} from global_message_map`);
+            delete global_message_map[channel.guild.id][channel.id];
+            await global_cache.set(GLOBAL_MESSAGE_MAP, global_message_map);
+        }
+
+        if (channel.guild.id in global_menu_message_map && channel.id in global_menu_message_map[channel.guild.id]) {
+            console.log(`Deleting channel ${channel.guild.id}:${channel.id} from global_menu_message_map`);
+            delete global_menu_message_map[channel.guild.id][channel.id];
+            await global_cache.set(GLOBAL_MENU_MAP, global_menu_message_map);
+        }
+
+        // const global_cache = message.client.getCache('global');
+        // const guild_id = channel.guild.id;
+        // const channel_id = channel.id;
+        // if (guild_id in global_message_map && channel_id in global_message_map[guild_id]) {
+        //     delete global_message_map[guild_id][channel_id];
+        //     await global_cache.set(GLOBAL_MESSAGE_MAP, global_message_map);
+        //     const message_id_idx = global_message_map[guild_id][channel_id].indexOf(message.id);
+        //     if (message_id_idx >= 0) {
+        //         logger.info(`onMessageDelete: Deleting message ${message.id} from global_message_map[${guild_id}][${channel_id}] and global_embeds`);
+        //         global_message_map[guild_id][channel_id].splice(message_id_idx, 1);
+
+        //         const guild_cache = message.client.getCache(message.guild.id);
+        //         const embed = get_embed(message.id);
+        //         const channel_archives = await client_get_channel(message.client, guild_cache, CHANNEL_RUN_ARCHIVES);
+        //         const channel_from = await get_embed_channel_from(message.client, embed);
+        //         embed.setColor("#000000");
+        //         embed.fields[FIELD_WHEN].value = '\u200B';
+        //         embed.fields.splice(embed.fields.length - 1, 1);
+        //         await channel_archives.send(embed);
+        //         global_embeds.delete(message.id);
+        //         await client_refresh_board(message.client, message.client.getCache(guild_id), guild_id, channel_id);
+        //         await global_cache.set(GLOBAL_MESSAGE_MAP, global_message_map);
+        //         await channel_from.send(`✅ **${embed.title}** is over. Roster message has been archived!`);
+        //     }
+        // }
+
+        // if (message.guild.id in global_menu_message_map) {
+        //     for (const channel_id in global_menu_message_map[message.guild.id]) {
+        //         const message_id_idx = global_menu_message_map[message.guild.id][channel_id].indexOf(message.id);
+        //         if (message_id_idx >= 0) {
+        //             logger.info(`onMessageDelete: Deleting menu message ${message.id} from global_menu_message_map[${message.guild.id}][${channel_id}] and global_menu_embeds`);
+        //             global_menu_message_map[message.guild.id][channel_id].splice(message_id_idx, 1);
+        //             global_menu_embeds.delete(message.id);
+        //             await global_cache.set(GLOBAL_MENU_MAP, global_menu_message_map);
+        //         }
+        //     }
+        // }
     },
     async execute(message, args) {
         const PREFIX = await message.client.getPrefix(message.guild.id);
