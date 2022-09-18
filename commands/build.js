@@ -374,46 +374,49 @@ function singular(word) {
 }
 
 async function refresh_calc_variable(file, variables) {
-    const url = `https://calc.talonro.com/js/${file}`;
-    fs.unlink(`./downloads/${file}.tmp`, function(err) {});
-    await download(url, `./downloads/${file}.tmp`);
-    logger.info(`Downloaded ${url}`);
-    fs.rename(`./downloads/${file}.tmp`, `./downloads/${file}`, function (err) { if (err) throw err });
+    const url = `https://kutsuru.github.io/ttcalculator/js/${file}`;
+    fs.unlink(`./downloads/${file}.tmp`, async function(err) {
+        await download(url, `./downloads/${file}.tmp`);
+        logger.info(`Downloaded ${url}`);
+        fs.unlink(`./downloads/${file}`, async function(err) {
+            fs.rename(`./downloads/${file}.tmp`, `./downloads/${file}`, async function (err) {
+                if (err) throw err;
+                const fileStream = fs.createReadStream(`./downloads/${file}`);
+                const rl = readline.createInterface({
+                    input: fileStream,
+                    crlfDelay: Infinity
+                });
+                // Note: we use the crlfDelay option to recognize all instances of CR LF
+                // ('\r\n') in input.txt as a single line break.
 
-    const fileStream = fs.createReadStream(`./downloads/${file}`);
-    const rl = readline.createInterface({
-        input: fileStream,
-        crlfDelay: Infinity
+                let var_array = variables;
+                if (typeof variables == 'string') {
+                    var_array = [variables];
+                } else if (!Array.isArray(variables)) {
+                    return;
+                }
+
+                let capture = false;
+                let captured = [];
+                for await (const line of rl) {
+                    // Each line in input.txt will be successively available here as `line`.
+                    if (var_array.some(variable => line.startsWith(`${variable} =`)) && capture === false) {
+                        capture = true;
+                    }
+
+                    if (capture) {
+                        captured.push(line);
+                    }
+
+                    if (line === '];' && capture === true) {
+                        capture = false;
+                    }
+                }
+                const item_obj_str = captured.join('\n');
+                eval(item_obj_str); // /gawi
+            });
+        });
     });
-    // Note: we use the crlfDelay option to recognize all instances of CR LF
-    // ('\r\n') in input.txt as a single line break.
-
-    let var_array = variables;
-    if (typeof variables == 'string') {
-        var_array = [variables];
-    } else if (!Array.isArray(variables)) {
-        return;
-    }
-
-    let capture = false;
-    let captured = [];
-    for await (const line of rl) {
-        // Each line in input.txt will be successively available here as `line`.
-        if (var_array.some(variable => line.startsWith(`${variable} =`)) && capture === false) {
-            capture = true;
-        }
-
-        if (capture) {
-            captured.push(line);
-        }
-
-        if (line === '];' && capture === true) {
-            capture = false;
-        }
-    }
-    const item_obj_str = captured.join('\n');
-
-    eval(item_obj_str); // /gawi
 }
 
 async function refresh_calc_variables() {
@@ -439,7 +442,6 @@ module.exports = {
             const result = new Map();
             const user_ids = await get_users();
             for (const user_id of user_ids) {
-                // Only pick users of the guild
                 // Only pick users of the guild
                 let member = null;
                 try {

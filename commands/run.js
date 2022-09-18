@@ -861,6 +861,12 @@ ${added_char_names.map(cn => `        ${cn}`).join('\n')}`);
         if (messages_to_delete != null) {
             await bulkDelete(channel_from, messages_to_delete);
         }
+    } else {
+        const channel_from = await get_embed_channel_from(client, embed);
+        await channel.send(`❌ **${embed.title}**: No char name to update!`);
+        if (messages_to_delete != null) {
+            await bulkDelete(channel_from, messages_to_delete);
+        }
     }
 }
 
@@ -1402,7 +1408,7 @@ ${emojis.map((elt, idx) => `\`${idx + 1}.\`    ${elt}`).join('\n')}
         await message.channel.send(questionRoleEmbed)
         .then(async choose_role_message => {
             messages_to_delete.push(choose_role_message);
-            await message.channel.awaitMessages(filter, { max: 1 })
+            await message.channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
             .then(async replies => {
                 const reply = replies.first();
                 const emoji_idx = parseInt(reply.content.trim());
@@ -1411,7 +1417,7 @@ ${emojis.map((elt, idx) => `\`${idx + 1}.\`    ${elt}`).join('\n')}
                 const run_msg = await get_message_by_id_from_global_map(message.client, msg_id_embed.message_id);
                 await update_user_to_roster(message.client, run_msg, player_user_id, emoji_name, server_timezone);
                 await bulkDelete(message.channel, messages_to_delete);
-            });
+            }).catch(timeout_function(message.channel, message.author.id));
         });
     }
 }
@@ -1498,7 +1504,7 @@ ${distinct_user_roles.map((elt, idx) => `\`${idx + 1}.\`    ${elt.emoji}`).join(
             await message.channel.send(questionRoleEmbed)
             .then(async choose_role_message => {
                 messages_to_delete.push(choose_role_message);
-                await message.channel.awaitMessages(filter, { max: 1 })
+                await message.channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
                 .then(async replies => {
                     const reply = replies.first();
                     const user_role_idx = parseInt(reply.content.trim());
@@ -1516,7 +1522,7 @@ ${distinct_user_roles.map((elt, idx) => `\`${idx + 1}.\`    ${elt.emoji}`).join(
                         await message.channel.send(`❌ **${embed.title}**: Failed to change role!`);
                         await bulkDelete(message.channel, messages_to_delete);
                     }
-                });
+                }).catch(timeout_function(message.channel, message.author.id));
             });
         }
     }
@@ -1528,8 +1534,8 @@ async function message_swap_players(message, msg_id_embed, user_id_1, user_id_2,
     const roles_1 = embed_get_roles_for_user(embed, user_id_1);
     const roles_2 = embed_get_roles_for_user(embed, user_id_2);
 
-    let role_1;
-    let role_2;
+    let role_1 = null;
+    let role_2 = null;
     if (roles_1.length == 0) {
         await message.channel.send(`❌ **${embed.title}**: <@${user_id_1}> doesn't have any role!`);
         await bulkDelete(message.channel, messages_to_delete);
@@ -1554,10 +1560,16 @@ ${distinct_user_roles_1.map((elt, idx) => `\`${idx + 1}.\`    ${elt.emoji}`).joi
         const filter = filter_number(message.channel, message.author.id, 1, distinct_user_roles_1.length, messages_to_delete);
         const choose_role_message = await message.channel.send(questionRoleEmbed);
         messages_to_delete.push(choose_role_message);
-        const replies = await message.channel.awaitMessages(filter, { max: 1 });
-        const reply = replies.first();
-        role_1 = distinct_user_roles_1[parseInt(reply.content.trim()) - 1];
+        await message.channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
+        .then(async replies => {
+            const reply = replies.first();
+            role_1 = distinct_user_roles_1[parseInt(reply.content.trim()) - 1];
+        }).catch(timeout_function(message.channel, message.author.id));
     }
+    if (role_1 === null) {
+        return;
+    }
+
     if (roles_2.length == 1) {
         role_2 = roles_2[0];
     } else if (roles_2.length > 1) {
@@ -1572,9 +1584,14 @@ ${distinct_user_roles_2.map((elt, idx) => `\`${idx + 1}.\`    ${elt.emoji}`).joi
         const filter = filter_number(message.channel, message.author.id, 1, distinct_user_roles_2.length, messages_to_delete);
         const choose_role_message = await message.channel.send(questionRoleEmbed);
         messages_to_delete.push(choose_role_message);
-        const replies = await message.channel.awaitMessages(filter, { max: 1 });
-        const reply = replies.first();
-        role_2 = distinct_user_roles_2[parseInt(reply.content.trim()) - 1];
+        await message.channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
+        .then(async replies => {
+            const reply = replies.first();
+            role_2 = distinct_user_roles_2[parseInt(reply.content.trim()) - 1];
+        }).catch(timeout_function(message.channel, message.author.id));
+    }
+    if (role_2 === null) {
+        return;
     }
 
     embed_swap_roles(embed, user_id_1, role_1.role, user_id_2, role_2.role);
@@ -1588,7 +1605,7 @@ async function message_move_player(message, msg_id_embed, user_id, messages_to_d
     const run_msg = await get_message_by_id_from_global_map(message.client, msg_id_embed.message_id);
     const roles = embed_get_roles_for_user(embed, user_id);
 
-    let role;
+    let role = null;
     if (roles.length == 0) {
         await message.channel.send(`❌ **${embed.title}**: <@${user_id}> doesn't have any role!`);
         await bulkDelete(message.channel, messages_to_delete);
@@ -1608,12 +1625,19 @@ ${distinct_user_roles.map((elt, idx) => `\`${idx + 1}.\`    ${elt.emoji}`).join(
         const filter = filter_number(message.channel, message.author.id, 1, distinct_user_roles.length, messages_to_delete);
         const choose_role_message = await message.channel.send(questionRoleEmbed);
         messages_to_delete.push(choose_role_message);
-        const replies = await message.channel.awaitMessages(filter, { max: 1 });
-        const reply = replies.first();
-        role = distinct_user_roles[parseInt(reply.content.trim()) - 1];
+        await message.channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
+        .then(async replies => {
+            const reply = replies.first();
+            role = distinct_user_roles[parseInt(reply.content.trim()) - 1];
+        }).catch(timeout_function(message.channel, message.author.id));
+    }
+    if (role == null) {
+        return;
     }
 
-    const emojis = Array.from(embed_get_distinct_available_emojis(embed));
+    console.log(role);
+    const emojis = Array.from(embed_get_distinct_available_emojis(embed)).filter(x => x != role.emoji);
+    console.log(emojis);
     if (emojis.length == 0) {
         await message.channel.send(`❌ **${embed.title}**: There's no available role!`);
         return;
@@ -1628,18 +1652,20 @@ ${emojis.map((elt, idx) => `\`${idx + 1}.\`    ${elt}`).join('\n')}
     const filter = filter_number(message.channel, message.author.id, 1, emojis.length, messages_to_delete);
     const choose_role_message = await message.channel.send(questionRoleEmbed);
     messages_to_delete.push(choose_role_message);
-    const replies = await message.channel.awaitMessages(filter, { max: 1 });
-    const reply = replies.first();
-    const emoji_idx = parseInt(reply.content.trim());
-    const emoji_name = emojis[emoji_idx - 1];
+    await message.channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
+    .then(async replies => {
+        const reply = replies.first();
+        const emoji_idx = parseInt(reply.content.trim());
+        const emoji_name = emojis[emoji_idx - 1];
 
-    if (embed_move_role(embed, user_id, role.role, emoji_name)) {
-        await run_msg.edit(embed);
-        await message.channel.send(`**${embed.title}**: <@${user_id}> moved from ${role.emoji} to ${emoji_name}!`);
-    } else {
-        await message.channel.send(`❌ **${embed.title}**: Cannot move <@${user_id}> from ${role.emoji} to ${emoji_name}!`);
-    }
-    await bulkDelete(message.channel, messages_to_delete);
+        if (embed_move_role(embed, user_id, role.role, emoji_name)) {
+            await run_msg.edit(embed);
+            await message.channel.send(`**${embed.title}**: <@${user_id}> moved from ${role.emoji} to ${emoji_name}!`);
+        } else {
+            await message.channel.send(`❌ **${embed.title}**: Cannot move <@${user_id}> from ${role.emoji} to ${emoji_name}!`);
+        }
+        await bulkDelete(message.channel, messages_to_delete);
+    }).catch(timeout_function(message.channel, message.author.id));
 }
 
 async function message_help(message, title, content) {
@@ -2801,13 +2827,13 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send(questionRunEmbed)
                 .then(async choose_run_message => {
                     messages_to_delete.push(choose_run_message);
-                    await message.channel.awaitMessages(filter, { max: 1 })
+                    await message.channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
                     .then(async replies => {
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
                         await message_update_roster(message, msg_id_embed, roster, messages_to_delete, server_timezone);
-                    });
+                    }).catch(timeout_function(message.channel, message.author.id));
                 });
             }
         } else if (args[0] === 'ping') {
@@ -2838,14 +2864,14 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send(questionRunEmbed)
                 .then(async choose_run_message => {
                     messages_to_delete.push(choose_run_message);
-                    await message.channel.awaitMessages(filter, { max: 1 })
+                    await message.channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
                     .then(async replies => {
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
                         await message_ping(message, msg_id_embed.embed, ping_message);
                         await bulkDelete(message.channel, messages_to_delete);
-                    });
+                    }).catch(timeout_function(message.channel, message.author.id));
                 });
             }
         } else if (args[0] === 'set-datetime') {
@@ -2879,14 +2905,14 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send(questionRunEmbed)
                 .then(async choose_run_message => {
                     messages_to_delete.push(choose_run_message);
-                    await message.channel.awaitMessages(filter, { max: 1 })
+                    await message.channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
                     .then(async replies => {
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
                         await message_update_datetime(message, guild_cache, msg_id_embed, date_time, server_timezone);
                         await bulkDelete(message.channel, messages_to_delete);
-                    });
+                    }).catch(timeout_function(message.channel, message.author.id));
                 });
             }
         } else if (args[0] === 'note') {
@@ -2917,14 +2943,14 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send(questionRunEmbed)
                 .then(async choose_run_message => {
                     messages_to_delete.push(choose_run_message);
-                    await message.channel.awaitMessages(filter, { max: 1 })
+                    await message.channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
                     .then(async replies => {
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
                         await message_update_note(message, msg_id_embed, note, server_timezone);
                         await bulkDelete(message.channel, messages_to_delete);
-                    });
+                    }).catch(timeout_function(message.channel, message.author.id));
                 });
             }
         } else if (args[0] === 'add-reminder') {
@@ -2978,14 +3004,14 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send(questionRunEmbed)
                 .then(async choose_run_message => {
                     messages_to_delete.push(choose_run_message);
-                    await message.channel.awaitMessages(filter, { max: 1 })
+                    await message.channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
                     .then(async replies => {
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
                         await message_add_reminder(message, msg_id_embed, reminder_minutes, server_timezone);
                         await bulkDelete(message.channel, messages_to_delete);
-                    });
+                    }).catch(timeout_function(message.channel, message.author.id));
                 });
             }
         } else if (args[0] === 'end') {
@@ -3011,14 +3037,14 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send(questionRunEmbed)
                 .then(async choose_run_message => {
                     messages_to_delete.push(choose_run_message);
-                    await message.channel.awaitMessages(filter, { max: 1 })
+                    await message.channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
                     .then(async replies => {
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
                         await message_end_run(message, guild_cache, msg_id_embed);
                         await bulkDelete(message.channel, messages_to_delete);
-                    });
+                    }).catch(timeout_function(message.channel, message.author.id));
                 });
             }
         } else if (args[0] === 'clear-reminders') {
@@ -3042,14 +3068,14 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send(questionRunEmbed)
                 .then(async choose_run_message => {
                     messages_to_delete.push(choose_run_message);
-                    await message.channel.awaitMessages(filter, { max: 1 })
+                    await message.channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
                     .then(async replies => {
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
                         await message_clear_reminders(message, msg_id_embed, server_timezone);
                         await bulkDelete(message.channel, messages_to_delete);
-                    });
+                    }).catch(timeout_function(message.channel, message.author.id));
                 });
             }
         } else if (args[0] === 'add') {
@@ -3080,13 +3106,13 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send(questionRunEmbed)
                 .then(async choose_run_message => {
                     messages_to_delete.push(choose_run_message);
-                    await message.channel.awaitMessages(filter, { max: 1 })
+                    await message.channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
                     .then(async replies => {
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
                         await message_add_player(message, msg_id_embed, player_user_id, messages_to_delete, server_timezone);
-                    });
+                    }).catch(timeout_function(message.channel, message.author.id));
                 });
             }
         } else if (args[0] === 'remove') {
@@ -3117,14 +3143,14 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send(questionRunEmbed)
                 .then(async choose_run_message => {
                     messages_to_delete.push(choose_run_message);
-                    await message.channel.awaitMessages(filter, { max: 1 })
+                    await message.channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
                     .then(async replies => {
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
                         await message_remove_player(message, msg_id_embed, player_user_id, server_timezone);
                         await bulkDelete(message.channel, messages_to_delete);
-                    });
+                    }).catch(timeout_function(message.channel, message.author.id));
                 });
             }
         } else if (args[0] === 'when') {
@@ -3149,13 +3175,13 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send(questionRunEmbed)
                 .then(async choose_run_message => {
                     messages_to_delete.push(choose_run_message);
-                    await message.channel.awaitMessages(filter, { max: 1 })
+                    await message.channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
                     .then(async replies => {
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
                         await show_when(message.client, msg_id_embed.message_id, message.author.id, message.channel, true, messages_to_delete, server_timezone);
-                    });
+                    }).catch(timeout_function(message.channel, message.author.id));
                 });
             }
         } else if (args[0] === 'forget-channel') {
@@ -3209,13 +3235,13 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send(questionRunEmbed)
                 .then(async choose_run_message => {
                     messages_to_delete.push(choose_run_message);
-                    await message.channel.awaitMessages(filter, { max: 1 })
+                    await message.channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
                     .then(async replies => {
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
                         await update_char_name_to_roster_by_message_id(message.client, msg_id_embed.message_id, player_user_id, message.channel, message.author, messages_to_delete, server_timezone);
-                    });
+                    }).catch(timeout_function(message.channel, message.author.id));
                 });
             }
         } else if (args[0] === 'add-board') {
@@ -3362,13 +3388,13 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send(questionRunEmbed)
                 .then(async choose_run_message => {
                     messages_to_delete.push(choose_run_message);
-                    await message.channel.awaitMessages(filter, { max: 1 })
+                    await message.channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
                     .then(async replies => {
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
                         await message_change_role(message, msg_id_embed, player_user_id, role, messages_to_delete);
-                    });
+                    }).catch(timeout_function(message.channel, message.author.id));
                 });
             }
         } else if (args[0] === 'swap') {
@@ -3401,13 +3427,13 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send(questionRunEmbed)
                 .then(async choose_run_message => {
                     messages_to_delete.push(choose_run_message);
-                    await message.channel.awaitMessages(filter, { max: 1 })
+                    await message.channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
                     .then(async replies => {
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
                         await message_swap_players(message, msg_id_embed, user_id_1, user_id_2, messages_to_delete);
-                    });
+                    }).catch(timeout_function(message.channel, message.author.id));
                 });
             }
         } else if (args[0] === 'set-title') {
@@ -3438,14 +3464,14 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send(questionRunEmbed)
                 .then(async choose_run_message => {
                     messages_to_delete.push(choose_run_message);
-                    await message.channel.awaitMessages(filter, { max: 1 })
+                    await message.channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
                     .then(async replies => {
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
                         await message_update_run_name(message, guild_cache, msg_id_embed, title, server_timezone);
                         await bulkDelete(message.channel, messages_to_delete);
-                    });
+                    }).catch(timeout_function(message.channel, message.author.id));
                 });
             }
         } else if (args[0] === 'move') {
@@ -3477,13 +3503,13 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                 await message.channel.send(questionRunEmbed)
                 .then(async choose_run_message => {
                     messages_to_delete.push(choose_run_message);
-                    await message.channel.awaitMessages(filter, { max: 1 })
+                    await message.channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
                     .then(async replies => {
                         const reply = replies.first();
                         const run_idx = parseInt(reply.content.trim());
                         const msg_id_embed = msg_id_embeds[run_idx - 1];
                         await message_move_player(message, msg_id_embed, user_id, messages_to_delete);
-                    });
+                    }).catch(timeout_function(message.channel, message.author.id));
                 });
             }
         } else if (args[0] === 'setup-menu') {
@@ -3557,12 +3583,17 @@ ${msg_id_embeds.map((elt, idx) => `\`${idx + 1}.\` ${elt.embed.title}`).join('\n
                     const filter = filter_number(message.channel, message.author.id, 1, msg_id_embeds.length, messages_to_delete);
                     const choose_run_message = await message.channel.send(questionRunEmbed);
                     messages_to_delete.push(choose_run_message);
-                    const replies = await message.channel.awaitMessages(filter, { max: 1 });
-                    const reply = replies.first();
-                    const run_idx = parseInt(reply.content.trim());
-                    const msg_id_embed = msg_id_embeds[run_idx - 1];
-                    embed = msg_id_embed.embed;
-                    await bulkDelete(message.channel, messages_to_delete);
+                    await message.channel.awaitMessages(filter, { max: 1, time: TIMEOUT_MS, errors: ['time'] })
+                    .then(async replies => {
+                        const reply = replies.first();
+                        const run_idx = parseInt(reply.content.trim());
+                        const msg_id_embed = msg_id_embeds[run_idx - 1];
+                        embed = msg_id_embed.embed;
+                        await bulkDelete(message.channel, messages_to_delete);
+                    }).catch(timeout_function(message.channel, message.author.id));
+                    if (embed == null) {
+                        return;
+                    }
                 }
             } else if ((match = /^\d+$/.exec(args[1])) != null) {
                 const message_id = args[1];
